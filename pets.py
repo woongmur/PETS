@@ -52,13 +52,47 @@ class C:
                 setattr(cls, name, "")
 
 
-BANNER = r"""
-  ____  _____ _____ ____
- |  _ \| ____|_   _/ ___|    Privilege Escalation Tool Suggester
- | |_) |  _|   | | \___ \    wes.py CVE  ->  real exploit tools
- |  __/| |___  | |  ___) |
- |_|   |_____| |_| |____/    JuicyPotato / PrintSpoofer / GodPotato / kernel LPE
-"""
+def _build_banner():
+    """PETS = 애완동물들이 Windows 창에 걸쳐 앉은 배너.
+    위칸(강아지/고양이)은 앞발을 창틀에 걸치고 빼꼼, 아래칸(토끼/새)은 웅크림.
+    각 창은 leads 의 출처를 상징: CVE(wes) / MS(불레틴) / MSF(모듈) / PoC(공개 도구)."""
+    W = 17
+
+    def c(s):
+        s = s[:W]
+        pad = W - len(s)
+        left = pad // 2
+        return " " * left + s + " " * (pad - left)
+
+    dog = [r" __     __ ", r"(  o   o  )", r" \  ^_^  / "]   # 강아지
+    cat = [r" /\_/\ ", r"( o.o )", r" =(. .)="]              # 고양이
+    rab = [r" (\_/) ", r"( -.- )", r'("")_("")']             # 토끼
+    brd = [r"  __   ", r"<(-_-)>", r"  ^^^  "]               # 새
+
+    def hbar():
+        return "+" + "+".join("-" * W for _ in range(2)) + "+"
+
+    def prow(cells):
+        return "|" + "|".join(c(x) for x in cells) + "|"
+
+    def label_row(labels):
+        return "|" + "|".join(" " + (l + ":").ljust(W - 1) for l in labels) + "|"
+
+    lines = [hbar(), label_row(["CVE", "MS"])]
+    for r in range(3):
+        lines.append(prow([dog[r], cat[r]]))
+    lines.append("|" + "|".join(c("___U___U___") for _ in range(2)) + "|")  # 앞발 걸친 창틀
+    lines.append(hbar())
+    lines.append(label_row(["MSF", "PoC"]))
+    for r in range(3):
+        lines.append(prow([rab[r], brd[r]]))
+    lines.append(hbar())
+    lines.append("     PETS  ·  Privilege Escalation Tool Suggester")
+    lines.append("     wes.py CVE   ->   real exploit tools & PoCs")
+    return "\n" + "\n".join("   " + ln for ln in lines) + "\n"
+
+
+BANNER = _build_banner()
 
 # 심각도/영향 우선순위 점수 (정렬용)
 IMPACT_WEIGHT = {
