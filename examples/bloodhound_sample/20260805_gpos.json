@@ -1,0 +1,3 @@
+{"data":[
+{"Properties":{"name":"DEFAULT DOMAIN POLICY@CORP.LOCAL","domain":"CORP.LOCAL"},"ObjectIdentifier":"GPO-GUID-0001","Aces":[{"PrincipalSID":"S-1-5-21-1111111111-2222222222-3333333333-513","PrincipalType":"Group","RightName":"GenericWrite","IsInherited":false}]}
+],"meta":{"type":"gpos","count":1,"version":4}}

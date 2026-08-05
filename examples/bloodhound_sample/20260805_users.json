@@ -1,0 +1,6 @@
+{"data":[
+{"Properties":{"name":"ATTACKER@CORP.LOCAL","domain":"CORP.LOCAL","enabled":true},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1105","Aces":[]},
+{"Properties":{"name":"SVC_SQL@CORP.LOCAL","domain":"CORP.LOCAL","enabled":true,"hasspn":true,"serviceprincipalnames":["MSSQLSvc/sql01.corp.local:1433"]},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1106","Aces":[],"AllowedToDelegate":["cifs/dc01.corp.local"]},
+{"Properties":{"name":"JDOE@CORP.LOCAL","domain":"CORP.LOCAL","enabled":true,"dontreqpreauth":true},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1107","Aces":[]},
+{"Properties":{"name":"SVC_BACKUP@CORP.LOCAL","domain":"CORP.LOCAL","enabled":true},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1108","Aces":[{"PrincipalSID":"S-1-5-21-1111111111-2222222222-3333333333-513","PrincipalType":"Group","RightName":"ForceChangePassword","IsInherited":false}]}
+],"meta":{"type":"users","count":4,"version":4}}

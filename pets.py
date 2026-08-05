@@ -452,16 +452,308 @@ def build_json(mapped, unmapped, os_hints, potato_tools):
     }
 
 
+# ===========================================================================
+# AD 모드 (--ad): bloodhound-python JSON 을 읽어 권한상승 엣지 -> 도구 추천
+# ===========================================================================
+
+# BloodHound ACE RightName -> KB 엣지 키 (소문자 정규화 후 매칭)
+RIGHT_ALIASES = {
+    "genericall": "GenericAll",
+    "genericwrite": "GenericWrite",
+    "writedacl": "WriteDacl",
+    "writeowner": "WriteOwner",
+    "owns": "Owns", "owner": "Owns",
+    "addmember": "AddMember", "addmembers": "AddMember", "addself": "AddMember",
+    "forcechangepassword": "ForceChangePassword",
+    "user-force-change-password": "ForceChangePassword",
+    "allextendedrights": "AllExtendedRights",
+    "addkeycredentiallink": "AddKeyCredentialLink",
+    "readlapspassword": "ReadLAPSPassword",
+    "readgmsapassword": "ReadGMSAPassword",
+    "addallowedtoact": "AddAllowedToAct",
+    "writespn": "WriteSPN", "addself-writespn": "WriteSPN",
+    "gplink": "GpLink_GPO",
+}
+# GPO 대상 쓰기 엣지는 GPO 악용으로 재분류
+GPO_WRITE_RIGHTS = {"GenericWrite", "GenericAll", "WriteDacl", "WriteOwner"}
+# DCSync 판정용
+DCSYNC_RIGHTS = {"getchanges", "getchangesall", "getchangesinfilteredset"}
+# "누구나" 악용 가능한 저권한 주체 (우선순위 상향)
+LOWPRIV_PRINCIPALS = ("DOMAIN USERS", "AUTHENTICATED USERS", "EVERYONE",
+                      "DOMAIN COMPUTERS", "ANONYMOUS", "GUESTS", "USERS")
+
+
+def load_ad_db(path=None):
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ad_edges.json")
+    if not os.path.isfile(path):
+        sys.exit(f"[!] AD 지식베이스를 찾을 수 없습니다: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _bh_type(obj, fname, meta):
+    t = (meta.get("type") or "").lower()
+    if t:
+        return t
+    for key in ("users", "groups", "computers", "domains", "gpos", "ous", "containers"):
+        if key in os.path.basename(fname).lower():
+            return key
+    return "unknown"
+
+
+def parse_bloodhound(json_path):
+    """디렉터리(또는 단일 파일)에서 bloodhound-python JSON 을 읽어
+    (sid_map, nodes) 반환. nodes 는 타입별 객체 리스트."""
+    if os.path.isdir(json_path):
+        files = [os.path.join(json_path, f) for f in os.listdir(json_path)
+                 if f.lower().endswith(".json")]
+    elif os.path.isfile(json_path):
+        files = [json_path]
+    else:
+        sys.exit(f"[!] --json-path 경로를 찾을 수 없습니다: {json_path}")
+
+    sid_map = {}
+    nodes = {"users": [], "groups": [], "computers": [], "domains": [],
+             "gpos": [], "ous": [], "containers": []}
+    loaded = 0
+    for fp in files:
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                doc = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(doc, dict) or "data" not in doc:
+            continue
+        meta = doc.get("meta", {}) if isinstance(doc.get("meta"), dict) else {}
+        btype = _bh_type(doc, fp, meta)
+        if btype not in nodes:
+            continue
+        for obj in doc.get("data", []):
+            if not isinstance(obj, dict):
+                continue
+            props = obj.get("Properties", {}) or {}
+            sid = obj.get("ObjectIdentifier") or props.get("objectid") or ""
+            name = props.get("name") or props.get("distinguishedname") or sid
+            if sid:
+                sid_map[sid] = {"name": name, "type": btype[:-1] if btype.endswith("s") else btype}
+            obj["_type"] = btype
+            obj["_sid"] = sid
+            obj["_name"] = name
+            nodes[btype].append(obj)
+        loaded += 1
+
+    if loaded == 0:
+        sys.exit("[!] --json-path 에서 유효한 BloodHound JSON 을 읽지 못했습니다.")
+    return sid_map, nodes
+
+
+def _resolve(sid, sid_map):
+    info = sid_map.get(sid)
+    if info:
+        return info["name"]
+    return sid or "(unknown)"
+
+
+def analyze_ad(sid_map, nodes):
+    """악용 가능한 엣지/속성을 수집. 반환: dict(edge_key -> list of finding)."""
+    edges = {}   # edge_key -> [ {principal, principal_sid, target, target_type, lowpriv, inherited} ]
+    props = {}   # prop_key -> [ {name, extra} ]
+
+    def add_edge(key, principal_sid, target_name, target_type, inherited):
+        pname = _resolve(principal_sid, sid_map)
+        lowpriv = any(tok in pname.upper() for tok in LOWPRIV_PRINCIPALS)
+        edges.setdefault(key, []).append({
+            "principal": pname, "principal_sid": principal_sid,
+            "target": target_name, "target_type": target_type,
+            "lowpriv": lowpriv, "inherited": inherited,
+        })
+
+    def add_prop(key, name, extra=""):
+        props.setdefault(key, []).append({"name": name, "extra": extra})
+
+    all_objs = (nodes["users"] + nodes["groups"] + nodes["computers"] +
+                nodes["domains"] + nodes["gpos"] + nodes["ous"] + nodes["containers"])
+
+    # DCSync 누적 (principal_sid, domain_name) -> set(rights)
+    dcsync_acc = {}
+
+    for obj in all_objs:
+        tname = obj.get("_name", "")
+        ttype = obj.get("_type", "").rstrip("s")
+        is_gpo = obj.get("_type") == "gpos"
+        is_domain = obj.get("_type") == "domains"
+
+        for ace in obj.get("Aces", []) or []:
+            if not isinstance(ace, dict):
+                continue
+            raw = (ace.get("RightName") or "").strip()
+            rl = raw.lower()
+            psid = ace.get("PrincipalSID") or ace.get("PrincipalID") or ""
+            inh = bool(ace.get("IsInherited"))
+
+            # DCSync 조각 누적
+            if rl in DCSYNC_RIGHTS and is_domain:
+                dcsync_acc.setdefault((psid, tname), set()).add(rl)
+                continue
+
+            key = RIGHT_ALIASES.get(rl)
+            if not key:
+                continue
+            # GPO 대상 쓰기 -> GPO 악용 엣지로 분류
+            if is_gpo and key in GPO_WRITE_RIGHTS:
+                key = "GpLink_GPO"
+            add_edge(key, psid, tname, ttype, inh)
+
+        # 위임 속성
+        if obj.get("AllowedToDelegate"):
+            add_prop("ConstrainedDelegation", tname,
+                     "-> " + ", ".join(str(x) for x in obj["AllowedToDelegate"][:3]))
+        if obj.get("HasSIDHistory"):
+            add_prop("SIDHistory", tname)
+
+        p = obj.get("Properties", {}) or {}
+        if p.get("unconstraineddelegation"):
+            add_prop("UnconstrainedDelegation", tname)
+        if p.get("hasspn") and p.get("enabled", True) and not tname.upper().startswith("KRBTGT"):
+            spns = p.get("serviceprincipalnames") or []
+            add_prop("Kerberoastable", tname, (spns[0] if spns else ""))
+        if p.get("dontreqpreauth"):
+            add_prop("ASREPRoastable", tname)
+        if p.get("passwordnotreqd"):
+            add_prop("PasswordNotRequired", tname)
+
+    # DCSync 확정 (GetChanges + GetChangesAll 동시 보유)
+    for (psid, dom), rights in dcsync_acc.items():
+        if {"getchanges", "getchangesall"} <= rights:
+            pname = _resolve(psid, sid_map)
+            lowpriv = any(tok in pname.upper() for tok in LOWPRIV_PRINCIPALS)
+            edges.setdefault("DCSync", []).append({
+                "principal": pname, "principal_sid": psid,
+                "target": dom, "target_type": "domain",
+                "lowpriv": lowpriv, "inherited": False,
+            })
+
+    return edges, props
+
+
+def _edge_priority(ad_db, key):
+    info = ad_db.get("edges", {}).get(key) or ad_db.get("properties", {}).get(key) or {}
+    return {"high": 0, "med": 1, "low": 2}.get(info.get("priority", "med"), 1)
+
+
+def print_ad_report(edges, props, ad_db, sid_map, nodes):
+    print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
+    nu, ng, nc = len(nodes["users"]), len(nodes["groups"]), len(nodes["computers"])
+    n_edge = sum(len(v) for v in edges.values())
+    n_prop = sum(len(v) for v in props.values())
+    lowpriv_hits = sum(1 for v in edges.values() for e in v if e["lowpriv"])
+
+    print(f"{C.BOLD}[AD 요약]{C.RESET} 노드: 사용자 {nu} · 그룹 {ng} · 컴퓨터 {nc}  |  "
+          f"악용 엣지 {C.GREEN}{n_edge}건{C.RESET} ({len(edges)}종) · 속성 기반 {n_prop}건")
+    if lowpriv_hits:
+        print(f"{C.RED}[주의]{C.RESET} 저권한 주체(Domain Users 등)가 보유한 엣지 "
+              f"{C.RED}{lowpriv_hits}건{C.RESET}{C.GREY} — 가장 먼저 확인하세요 (누구나 악용 가능){C.RESET}")
+    print()
+
+    edb = ad_db.get("edges", {})
+    pdb = ad_db.get("properties", {})
+
+    # 1) ACL 엣지 (우선순위 -> 저권한 주체 -> 건수)
+    print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
+    print(f"{C.GREEN}{C.BOLD} AD 권한상승 엣지 (BloodHound ACL/제어){C.RESET}")
+    print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
+    if not edges:
+        print(f"  {C.GREY}악용 가능한 ACL 엣지를 찾지 못했습니다.{C.RESET}")
+    for key in sorted(edges, key=lambda k: (_edge_priority(ad_db, k), -len(edges[k]))):
+        info = edb.get(key, {})
+        insts = edges[key]
+        has_low = any(e["lowpriv"] for e in insts)
+        low_tag = f" {C.RED}[저권한 주체 포함!]{C.RESET}" if has_low else ""
+        print(f"\n{C.BOLD}● {C.RED}{key}{C.RESET} {C.DIM}({len(insts)}건){C.RESET}"
+              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}{low_tag}")
+        if info.get("summary"):
+            print(f"    {C.DIM}{info['summary']}{C.RESET}")
+        # 구체 인스턴스 (저권한 주체 우선, 최대 6개)
+        shown = sorted(insts, key=lambda e: (not e["lowpriv"], e["inherited"]))[:6]
+        for e in shown:
+            mark = f" {C.RED}<저권한>{C.RESET}" if e["lowpriv"] else ""
+            inh = f" {C.GREY}(상속){C.RESET}" if e["inherited"] else ""
+            print(f"      {C.CYAN}{e['principal']}{C.RESET} --{key}--> "
+                  f"{C.BOLD}{e['target']}{C.RESET} {C.GREY}[{e['target_type']}]{C.RESET}{mark}{inh}")
+        if len(insts) > len(shown):
+            print(f"      {C.GREY}... 그 외 {len(insts)-len(shown)}건{C.RESET}")
+        # 악용 방법
+        for ab in info.get("abuse", []):
+            print(f"      {C.MAGENTA}▸ {ab.get('when','')}{C.RESET}")
+            for cmd in ab.get("cmd", []):
+                print(f"        {C.GREEN}$ {cmd}{C.RESET}" if not cmd.startswith("#")
+                      else f"        {C.GREY}{cmd}{C.RESET}")
+        for t in info.get("tools", []):
+            print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
+
+    # 2) 속성 기반 (Kerberoast / AS-REP / 위임 등)
+    print(f"\n{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
+    print(f"{C.MAGENTA}{C.BOLD} 속성 기반 공격 (Roast / 위임 / 기타){C.RESET}")
+    print(f"{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
+    if not props:
+        print(f"  {C.GREY}속성 기반 대상이 없습니다.{C.RESET}")
+    for key in sorted(props, key=lambda k: _edge_priority(ad_db, k)):
+        info = pdb.get(key, {})
+        insts = props[key]
+        print(f"\n{C.BOLD}● {C.RED}{key}{C.RESET} {C.DIM}({len(insts)}건){C.RESET}"
+              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}")
+        if info.get("summary"):
+            print(f"    {C.DIM}{info['summary']}{C.RESET}")
+        for e in insts[:8]:
+            extra = f" {C.GREY}{e['extra']}{C.RESET}" if e.get("extra") else ""
+            print(f"      {C.BOLD}{e['name']}{C.RESET}{extra}")
+        if len(insts) > 8:
+            print(f"      {C.GREY}... 그 외 {len(insts)-8}건{C.RESET}")
+        for cmd in info.get("cmd", []):
+            print(f"        {C.GREEN}$ {cmd}{C.RESET}" if not cmd.startswith("#")
+                  else f"        {C.GREY}{cmd}{C.RESET}")
+        for t in info.get("tools", []):
+            print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
+
+    print(f"\n{C.DIM}[안내] PETS AD 모드는 인가된 모의해킹/실습용입니다. "
+          f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
+
+
+def build_ad_json(edges, props):
+    return {
+        "edges": {k: v for k, v in edges.items()},
+        "properties": {k: v for k, v in props.items()},
+    }
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+def _run_ad(args):
+    ad_db = load_ad_db(args.ad_db)
+    sid_map, nodes = parse_bloodhound(args.json_path)
+    edges, props = analyze_ad(sid_map, nodes)
+    print_ad_report(edges, props, ad_db, sid_map, nodes)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(build_ad_json(edges, props), f, ensure_ascii=False, indent=2)
+        print(f"[+] JSON 결과 저장: {args.json}")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="PETS - wes.py CVE 를 실제 익스플로잇 도구로 매핑/추천",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("wes_output", help="wes.py 출력 파일 (텍스트 또는 CSV)")
+    ap.add_argument("wes_output", nargs="?", help="wes.py 출력 파일 (텍스트 또는 CSV)")
+    ap.add_argument("--ad", action="store_true",
+                    help="AD 모드: BloodHound(bloodhound-python) JSON 을 분석")
+    ap.add_argument("--json-path", dest="json_path",
+                    help="[--ad 필수] bloodhound-python JSON 들이 있는 디렉터리(또는 단일 파일)")
     ap.add_argument("--db", help="지식베이스 JSON 경로 (기본: 스크립트 옆 exploit_db.json)")
+    ap.add_argument("--ad-db", dest="ad_db",
+                    help="AD 지식베이스 경로 (기본: 스크립트 옆 ad_edges.json)")
     ap.add_argument("--show-all", action="store_true", help="미매핑 CVE 전체 표시")
     ap.add_argument("--json", metavar="FILE", help="결과를 JSON 으로 저장")
     ap.add_argument("--no-color", action="store_true", help="색상 출력 끄기")
@@ -473,6 +765,15 @@ def main():
         global TYPE_LABEL
         TYPE_LABEL = {k: f"[{k.upper()[:3]:<3}]" for k in TYPE_LABEL}
 
+    # AD 모드 분기
+    if args.ad:
+        if not args.json_path:
+            sys.exit("[!] --ad 모드에는 --json-path <BloodHound JSON 디렉터리> 가 필요합니다.")
+        _run_ad(args)
+        return
+
+    if not args.wes_output:
+        sys.exit("[!] wes.py 출력 파일을 지정하거나, AD 분석은 --ad --json-path 를 사용하세요.")
     if not os.path.isfile(args.wes_output):
         sys.exit(f"[!] 입력 파일을 찾을 수 없습니다: {args.wes_output}")
 

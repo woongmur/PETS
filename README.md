@@ -49,9 +49,12 @@ python3 pets.py wes_out.txt
 
 | 옵션 | 설명 |
 |------|------|
+| `--ad` | **AD 모드**: BloodHound(bloodhound-python) JSON 을 분석해 권한상승 엣지 → 도구 추천 |
+| `--json-path DIR` | `[--ad 필수]` bloodhound-python JSON 들이 있는 디렉터리(또는 단일 파일) |
 | `--show-all` | 도구가 매핑되지 않은 CVE 도 전부 표시 |
-| `--json FILE` | 결과를 JSON 으로 저장 (자동화/연동용) |
-| `--db PATH` | 지식베이스 JSON 경로 지정 (기본: 스크립트 옆 `exploit_db.json`) |
+| `--json FILE` | 결과를 JSON 으로 저장 (자동화/연동용, wes·AD 모드 공통) |
+| `--db PATH` | CVE 지식베이스 경로 지정 (기본: 스크립트 옆 `exploit_db.json`) |
+| `--ad-db PATH` | AD 엣지 지식베이스 경로 지정 (기본: 스크립트 옆 `ad_edges.json`) |
 | `--no-color` | ANSI 색상 끄기 (파이프/리다이렉트 시 자동 비활성) |
 
 ## 출력 구조
@@ -66,6 +69,36 @@ python3 pets.py wes_out.txt
 python3 pets.py examples/sample_wes_output.txt
 python3 pets.py examples/sample_wes_output.csv --show-all
 ```
+
+## AD 모드 (`--ad`): BloodHound 엣지 → 실제 공격 도구
+
+로컬 권한상승과 똑같은 철학을 AD 에도 적용한다. BloodHound 그래프를 눈으로 훑는 대신,
+`bloodhound-python` 이 뽑은 JSON 을 읽어 **악용 가능한 권한상승 엣지를 찾아 impacket/PowerView/
+Certipy/Rubeus 명령까지 한국어로** 제시한다.
+
+```bash
+# 1) BloodHound 데이터 수집 (예)
+bloodhound-python -u attacker -p 'Passw0rd!' -d corp.local -ns 10.10.10.10 -c All
+
+# 2) 생성된 *_users.json / *_groups.json / *_computers.json ... 가 있는 폴더를 지정
+python3 pets.py --ad --json-path ./  
+
+# 예제 데이터로 확인
+python3 pets.py --ad --json-path examples/bloodhound_sample
+```
+
+**탐지/추천하는 것:**
+
+- **ACL 엣지** — `GenericAll` · `GenericWrite` · `WriteDacl` · `WriteOwner` · `Owns` ·
+  `ForceChangePassword` · `AddMember` · `AllExtendedRights` · `AddKeyCredentialLink`(Shadow Cred) ·
+  `ReadLAPSPassword` · `ReadGMSAPassword` · `AddAllowedToAct`(RBCD) · `WriteSPN` · GPO 쓰기
+- **DCSync** — 도메인 객체의 `GetChanges` + `GetChangesAll` 조합을 자동 판정
+- **속성 기반** — Kerberoastable(SPN) · AS-REP Roastable · 제약/무제약 위임 · PasswordNotReqd · SIDHistory
+- **저권한 주체 강조** — `Domain Users`/`Authenticated Users`/`Everyone` 등이 가진 엣지를
+  `[저권한 주체 포함!]` 로 최상위 강조 (누구나 악용 가능 = 최우선 확인 대상)
+
+각 엣지마다 **무엇을 뜻하는지 + 대상 유형별 악용 절차 + 바로 복붙 가능한 명령 + 도구 링크**를
+함께 출력한다. 우선순위(high/med/low)와 건수로 정렬된다.
 
 ## 지식베이스 확장하기
 

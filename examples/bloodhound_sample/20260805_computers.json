@@ -1,0 +1,4 @@
+{"data":[
+{"Properties":{"name":"WS01.CORP.LOCAL","domain":"CORP.LOCAL","enabled":true,"unconstraineddelegation":true},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1201","Aces":[]},
+{"Properties":{"name":"SQL01.CORP.LOCAL","domain":"CORP.LOCAL","enabled":true},"ObjectIdentifier":"S-1-5-21-1111111111-2222222222-3333333333-1202","Aces":[{"PrincipalSID":"S-1-5-21-1111111111-2222222222-3333333333-1105","PrincipalType":"User","RightName":"GenericAll","IsInherited":false}]}
+],"meta":{"type":"computers","count":2,"version":4}}
