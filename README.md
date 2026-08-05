@@ -22,6 +22,11 @@ PETS 는 wes.py 출력을 파싱해 CVE 를 인식하고, **실제로 존재하�
   정규화해 처리한다.
 - **OS 인지 Potato 추천**: 탐지된 OS 에 맞는 권한 기반 도구만 노출. 예를 들어 Server 2003 박스에서는
   Churrasco 만 보여 주고 JuicyPotato/PrintSpoofer 등 최신 도구는 숨긴다.
+- **적용 범위(scope) 뱃지**: 각 CVE 가 단독 호스트용인지 AD(도메인) 전용인지 표시한다.
+  - `[로컬]` — 단독(standalone) 호스트에서 동작하는 로컬 권한상승(LPE)
+  - `[로컬+AD]` — 둘 다 가능 (예: PrintNightmare 는 로컬 관리자 추가 + 원격/도메인 악용 모두 가능)
+  - `[AD 전용]` — Zerologon · MS14-068 · noPac · PetitPotam 처럼 **도메인 컨트롤러/AD 가 있어야** 동작.
+    단독 박스에서는 무의미하므로 요약에 별도 경고를 띄운다.
 - **의존성 없음**: Python 3 표준 라이브러리만 사용. `--json` 으로 결과 내보내기 가능.
 
 ## 사용법

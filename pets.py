@@ -310,15 +310,31 @@ def _tlabel(ttype):
     return TYPE_LABEL.get(ttype, f"[{ttype.upper()[:3]:<3}]")
 
 
+def scope_badge(scope):
+    """익스플로잇 적용 범위 뱃지. domain=AD 필요, both=로컬+AD, local=단독 호스트."""
+    if scope == "domain":
+        return f"{C.RED}{C.BOLD}[AD 전용]{C.RESET}"
+    if scope == "both":
+        return f"{C.YELLOW}[로컬+AD]{C.RESET}"
+    return f"{C.GREY}[로컬]{C.RESET}"
+
+
 def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
     print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
 
     total = len(mapped) + len(unmapped)
+    ad_only = sum(1 for f in mapped if f["db"].get("scope") == "domain")
     print(f"{C.BOLD}[요약]{C.RESET} 탐지 CVE {total}개 중 "
           f"{C.GREEN}{len(mapped)}개{C.RESET} 에 익스플로잇 도구 매핑됨, "
           f"{C.GREY}{len(unmapped)}개{C.RESET} 미매핑")
     if os_hints:
         print(f"{C.BOLD}[OS 힌트]{C.RESET} {', '.join(os_hints)}")
+    print(f"{C.DIM}[범위 뱃지] {C.RESET}{scope_badge('local')}{C.DIM} 단독 호스트 LPE   "
+          f"{C.RESET}{scope_badge('both')}{C.DIM} 로컬/AD 모두   "
+          f"{C.RESET}{scope_badge('domain')}{C.DIM} 도메인(AD) 환경에서만 사용 가능{C.RESET}")
+    if ad_only:
+        print(f"{C.RED}[주의]{C.RESET} 매핑된 {len(mapped)}개 중 {C.RED}{ad_only}개는 AD 전용{C.RESET}"
+              f"{C.GREY} — 단독(standalone) 박스라면 사용 불가{C.RESET}")
     print()
 
     # 1) 도구가 매핑된 우선순위 CVE
@@ -331,7 +347,8 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
         db = f["db"]
         aliases = db.get("aliases", [])
         alias_str = f" {C.YELLOW}({', '.join(aliases)}){C.RESET}" if aliases else ""
-        print(f"\n{C.BOLD}[{i:>2}] {C.RED}{f['cve']}{C.RESET}{alias_str}"
+        badge = scope_badge(db.get("scope", "local"))
+        print(f"\n{C.BOLD}[{i:>2}] {C.RED}{f['cve']}{C.RESET}{alias_str} {badge}"
               f"  {C.DIM}{db.get('impact','')}{C.RESET}")
         print(f"     {C.DIM}{db.get('name','')}{C.RESET}")
         if db.get("os"):
@@ -407,6 +424,7 @@ def build_json(mapped, unmapped, os_hints, potato_tools):
                 "cve": f["cve"],
                 "impact": f.get("impact", ""),
                 "severity": f.get("severity", ""),
+                "scope": f["db"].get("scope", "local"),
                 "aliases": f["db"].get("aliases", []),
                 "name": f["db"].get("name", ""),
                 "target_os": f["db"].get("os", ""),
