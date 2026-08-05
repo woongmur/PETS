@@ -517,6 +517,20 @@ RIGHT_ALIASES = {
     "addallowedtoact": "AddAllowedToAct",
     "writespn": "WriteSPN", "addself-writespn": "WriteSPN",
     "gplink": "GpLink_GPO",
+    # BloodHound CE 신규 엣지
+    "writegplink": "WriteGPLink",
+    "writeaccountrestrictions": "WriteAccountRestrictions",
+    "synclapspassword": "SyncLAPSPassword",
+    "dumpsmsapassword": "DumpSMSAPassword",
+    "writeownerlimitedrights": "WriteOwner",
+    "ownslimitedrights": "Owns",
+}
+# 컴퓨터 로컬그룹 필드 -> 측면이동 접근 유형
+LATERAL_FIELDS = {
+    "LocalAdmins": "LocalAdmin",
+    "RemoteDesktopUsers": "RDP",
+    "PSRemoteUsers": "WinRM",
+    "DcomUsers": "DCOM",
 }
 # GPO 대상 쓰기 엣지는 GPO 악용으로 재분류
 GPO_WRITE_RIGHTS = {"GenericWrite", "GenericAll", "WriteDacl", "WriteOwner"}
@@ -694,6 +708,37 @@ def analyze_ad(sid_map, nodes):
     return edges, props
 
 
+def _ace_members(field_val):
+    """LocalAdmins 등은 [{...}] 또는 {'Results':[...]} 형태 -> SID 리스트 추출."""
+    if isinstance(field_val, dict):
+        field_val = field_val.get("Results", [])
+    out = []
+    for m in field_val or []:
+        if isinstance(m, dict):
+            sid = m.get("ObjectIdentifier") or m.get("MemberId") or m.get("SID")
+            if sid:
+                out.append(sid)
+    return out
+
+
+def analyze_lateral(sid_map, nodes, belongs):
+    """컴퓨터 로컬그룹(LocalAdmins/RDP/WinRM/DCOM) -> 측면이동 접근 수집.
+    반환: {access_type: [ {principal, computer, owned, lowpriv} ]}"""
+    lateral = {}
+    for comp in nodes["computers"]:
+        cname = comp.get("_name", "")
+        for field, atype in LATERAL_FIELDS.items():
+            for msid in _ace_members(comp.get(field)):
+                pname = _resolve(msid, sid_map)
+                owned = msid in belongs
+                lowpriv = any(tok in pname.upper() for tok in LOWPRIV_PRINCIPALS)
+                lateral.setdefault(atype, []).append({
+                    "principal": pname, "principal_sid": msid,
+                    "computer": cname, "owned": owned, "lowpriv": lowpriv,
+                })
+    return lateral
+
+
 def _edge_priority(ad_db, key):
     info = ad_db.get("edges", {}).get(key) or ad_db.get("properties", {}).get(key) or {}
     return {"high": 0, "med": 1, "low": 2}.get(info.get("priority", "med"), 1)
@@ -854,6 +899,36 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
         for t in info.get("tools", []):
             print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
+    # 2.7) 측면이동 (로컬관리자/RDP/WinRM/DCOM)
+    lateral = ctx.get("lateral", {})
+    ldb = ad_db.get("lateral", {})
+    if lateral:
+        print(f"\n{C.BLUE}{C.BOLD}{'='*74}{C.RESET}")
+        ltitle = " 측면이동 (컴퓨터 로컬 관리자 / RDP / WinRM / DCOM)"
+        if owned_names:
+            ltitle += "   ★ = 소유 계정으로 접근 가능"
+        print(f"{C.BLUE}{C.BOLD}{ltitle}{C.RESET}")
+        print(f"{C.BLUE}{C.BOLD}{'='*74}{C.RESET}")
+        for atype in sorted(lateral, key=lambda k: _edge_priority(ad_db, k)):
+            info = ldb.get(atype, {})
+            insts = lateral[atype]
+            has_owned = any(x["owned"] for x in insts)
+            tag = f" {C.GREEN}{C.BOLD}[★ 소유 계정 접근 가능]{C.RESET}" if has_owned else ""
+            print(f"\n{C.BOLD}● {C.RED}{atype}{C.RESET} {C.DIM}({len(insts)}건){C.RESET}"
+                  f"  {C.YELLOW}{info.get('ko','')}{C.RESET}{tag}")
+            shown = sorted(insts, key=lambda x: (not x["owned"], not x["lowpriv"]))[:8]
+            for x in shown:
+                mark = (f" {C.GREEN}{C.BOLD}★OWNED{C.RESET}" if x["owned"]
+                        else (f" {C.RED}<저권한>{C.RESET}" if x["lowpriv"] else ""))
+                pcolor = C.GREEN if x["owned"] else C.CYAN
+                print(f"      {pcolor}{x['principal']}{C.RESET} --{atype}--> "
+                      f"{C.BOLD}{x['computer']}{C.RESET}{mark}")
+            if len(insts) > len(shown):
+                print(f"      {C.GREY}... 그 외 {len(insts)-len(shown)}건{C.RESET}")
+            _print_cmds(info.get("cmd", []), subs)
+            for t in info.get("tools", []):
+                print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
+
     # 3) AD CS (인증서 서비스) - 자동탐지 불가, 반드시 Certipy 로 점검
     adcs = ad_db.get("adcs")
     if adcs:
@@ -981,9 +1056,10 @@ def _run_ad(args):
     owned_args = [x.strip() for x in (args.owned or "").split(",") if x.strip()]
     owned_names, owned_sids, belongs, not_found = resolve_owned(owned_args, sid_map, nodes)
     subs = build_subs(owned_args, args.domain, args.dc, nodes, sid_map)
+    lateral = analyze_lateral(sid_map, nodes, belongs)
     ctx = {"owned_names": owned_names, "owned_sids": owned_sids,
            "belongs": belongs, "not_found": not_found, "subs": subs,
-           "show_privileged": args.show_privileged}
+           "show_privileged": args.show_privileged, "lateral": lateral}
 
     print_ad_report(edges, props, ad_db, sid_map, nodes, ctx)
     if args.json:

