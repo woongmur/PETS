@@ -17,7 +17,11 @@ PETS 는 wes.py 출력을 파싱해 CVE 를 인식하고, **실제로 존재하�
   큰 CVE 를 위로 정렬. 도구 미매핑 CVE 는 접어 둔다(`--show-all` 로 전체).
 - **권한 기반 기법 안내(Potato 계열)**: CVE 와 무관하게 `SeImpersonatePrivilege` 보유 시
   쓰는 PrintSpoofer/GodPotato/JuicyPotato 등을 탐지 OS 에 맞춰 항상 함께 추천.
-- **입력 형식 자동 감지**: wes.py 기본 텍스트 출력과 CSV(`-o out.csv`) 모두 지원.
+- **입력 형식 자동 감지**: wes.py 기본 텍스트 출력과 CSV(`-o out.csv`) 모두 지원. wes 버전별
+  헤더 차이(`Affected product` vs `AffectedProduct`, `Exploit` vs `Exploits`, `KB` vs `BulletinKB`)를
+  정규화해 처리한다.
+- **OS 인지 Potato 추천**: 탐지된 OS 에 맞는 권한 기반 도구만 노출. 예를 들어 Server 2003 박스에서는
+  Churrasco 만 보여 주고 JuicyPotato/PrintSpoofer 등 최신 도구는 숨긴다.
 - **의존성 없음**: Python 3 표준 라이브러리만 사용. `--json` 으로 결과 내보내기 가능.
 
 ## 사용법

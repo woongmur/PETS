@@ -104,32 +104,61 @@ def parse_wes(path):
     return findings
 
 
+# wes.py CSV 헤더는 버전에 따라 다르다:
+#   구버전 텍스트/CSV: Date, KB, Affected product, Affected component, Exploit
+#   신버전 CSV(-o out.csv): DatePosted, BulletinKB, AffectedProduct, AffectedComponent, Exploits
+# 정규화(소문자+영숫자만) 후 별칭으로 매칭한다.
+CSV_ALIASES = {
+    "cve": ["cve"],
+    "title": ["title"],
+    "product": ["affectedproduct"],
+    "severity": ["severity"],
+    "impact": ["impact"],
+    "exploit": ["exploits", "exploit"],
+    "kb": ["bulletinkb", "kb"],
+}
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
 def _parse_csv(raw):
     """CSV 형식이면 findings 리스트, 아니면 None 반환."""
     first_line = raw.lstrip().splitlines()[0] if raw.strip() else ""
-    if "CVE" not in first_line or "," not in first_line:
+    if "CVE" not in first_line.upper() or "," not in first_line:
         return None
     try:
         reader = csv.DictReader(io.StringIO(raw))
         rows = list(reader)
     except csv.Error:
         return None
-    if not rows or "CVE" not in (reader.fieldnames or []):
+    fieldnames = reader.fieldnames or []
+    # 정규화된 헤더 -> 실제 헤더 매핑
+    norm_map = {_norm(fn): fn for fn in fieldnames}
+    if "cve" not in norm_map:
         return None
+
+    def col(row, field):
+        for alias in CSV_ALIASES[field]:
+            real = norm_map.get(alias)
+            if real is not None:
+                return (row.get(real) or "").strip()
+        return ""
 
     findings = []
     for row in rows:
-        cve = (row.get("CVE") or "").strip()
-        if not CVE_RE.fullmatch(cve.upper()):
+        cve = col(row, "cve").upper()
+        if not CVE_RE.fullmatch(cve):
             continue
         findings.append({
-            "cve": cve.upper(),
-            "title": (row.get("Title") or "").strip(),
-            "product": (row.get("Affected product") or "").strip(),
-            "severity": (row.get("Severity") or "").strip(),
-            "impact": (row.get("Impact") or "").strip(),
-            "exploit": (row.get("Exploit") or "").strip(),
-            "kb": (row.get("KB") or "").strip(),
+            "cve": cve,
+            "title": col(row, "title"),
+            "product": col(row, "product"),
+            "severity": col(row, "severity"),
+            "impact": col(row, "impact"),
+            "exploit": col(row, "exploit"),
+            "kb": col(row, "kb"),
         })
     return findings
 
@@ -204,6 +233,21 @@ def detect_os(raw_findings, full_text=""):
         if re.search(pat, text):
             hints.append(label)
     return hints
+
+
+def os_tokens(text):
+    """OS 문자열에서 비교용 토큰 집합 추출 (Potato 적용 여부 판정)."""
+    t = (text or "").lower()
+    toks = set()
+    for num in ("2000", "2003", "2008", "2012", "2016", "2019", "2022"):
+        if num in t:
+            toks.add(num)
+    if re.search(r"\bxp\b", t):
+        toks.add("xp")
+    # 클라이언트 버전: "windows 7/8/10/11" 및 범위 표기의 양 끝 숫자
+    for m in re.findall(r"(?<!\d)(11|10|8|7)(?!\d)", t):
+        toks.add("win" + m)
+    return toks
 
 
 # ---------------------------------------------------------------------------
@@ -305,16 +349,27 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
     print(f"  {C.GREY}먼저 확인: {C.RESET}{C.BOLD}whoami /priv{C.RESET}"
           f"{C.GREY}  ->  SeImpersonatePrivilege 가 Enabled 면 아래 도구가 강력함{C.RESET}")
     print(f"  {C.GREY}(IIS APPPOOL, mssql, 서비스 계정에서 자주 보유. CVE 없이도 SYSTEM 획득){C.RESET}")
-    for t in potato_tools:
-        relevant = ""
-        if os_hints and any(h.split()[-1] in t.get("os", "") or h in t.get("os", "")
-                            for h in os_hints):
-            relevant = f" {C.GREEN}<- 탐지 OS 에 적합{C.RESET}"
+
+    # 탐지된 OS 에 맞는 도구만 노출 (예: Server 2003 -> Churrasco 만, 최신 Potato 는 제외)
+    hint_tok = os_tokens(" ".join(os_hints))
+    if hint_tok:
+        applicable = [t for t in potato_tools if os_tokens(t.get("os", "")) & hint_tok]
+    else:
+        applicable = list(potato_tools)
+    if not applicable:            # 판정 불가 시 전체 노출 (숨김으로 인한 누락 방지)
+        applicable = list(potato_tools)
+    hidden = len(potato_tools) - len(applicable)
+
+    for t in applicable:
+        relevant = f" {C.GREEN}<- 탐지 OS 에 적합{C.RESET}" if hint_tok else ""
         print(f"\n     {_tlabel(t.get('type',''))} {C.BOLD}{t['name']}{C.RESET}{relevant}")
         print(f"          {C.GREY}적용: {t.get('os','')}{C.RESET}")
         print(f"          {C.BLUE}{t.get('url','')}{C.RESET}")
         if t.get("note"):
             print(f"          {C.GREY}> {t['note']}{C.RESET}")
+    if hidden > 0:
+        print(f"\n  {C.GREY}(탐지 OS 와 무관한 Potato 도구 {hidden}개는 숨김. "
+              f"전체 목록은 exploit_db.json 참고){C.RESET}")
 
     # 3) 미매핑 CVE
     print(f"\n{C.GREY}{C.BOLD}{'='*74}{C.RESET}")
