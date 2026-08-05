@@ -52,6 +52,31 @@ class C:
                 setattr(cls, name, "")
 
 
+EXAMPLES = r"""
+사용 예시
+─────────────────────────────────────────────────────────────────────
+[로컬 권한상승 - wes.py CVE 매핑]
+  # 1) 대상에서 systeminfo 수집 후 wes.py 실행
+  python3 wes.py systeminfo.txt -o wes_out.txt        # 또는 -o wes_out.csv
+  # 2) PETS 로 실제 익스플로잇 도구 추천
+  python3 pets.py wes_out.txt
+  python3 pets.py wes_out.csv --show-all               # 미매핑 CVE 까지 전부
+  python3 pets.py wes_out.txt --json result.json       # 결과 JSON 저장
+
+[AD 권한상승 - BloodHound 엣지 매핑]
+  # bloodhound-python 으로 수집한 *_users.json 등이 있는 폴더를 지정
+  python3 pets.py --ad --json-path ./bh_output
+  # 장악 계정 지정 -> 즉시 악용 가능한 엣지 강조 + 명령 자동 치환
+  python3 pets.py --ad --json-path ./bh_output --owned 'svc_tgs:Passw0rd!' --dc dc.corp.htb
+  python3 pets.py --ad --json-path ./bh_output --owned 'user1,user2' --domain corp.htb
+  python3 pets.py --ad --json-path ./bh_output --show-privileged   # 특권주체 엣지도 표시
+
+[예제 데이터로 바로 체험]
+  python3 pets.py examples/sample_wes_output.txt
+  python3 pets.py --ad --json-path examples/bloodhound_sample --owned jdoe
+─────────────────────────────────────────────────────────────────────
+"""
+
 BANNER = r"""
   ____  _____ _____ ____
  |  _ \| ____|_   _/ ___|    Privilege Escalation Tool Suggester
@@ -810,6 +835,24 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
         for t in info.get("tools", []):
             print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
+    # 3) AD CS (인증서 서비스) - 자동탐지 불가, 반드시 Certipy 로 점검
+    adcs = ad_db.get("adcs")
+    if adcs:
+        print(f"\n{C.YELLOW}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"{C.YELLOW}{C.BOLD} AD CS 인증서 권한상승 (ESC1~13) — bloodhound 로는 미탐지, Certipy 필수{C.RESET}")
+        print(f"{C.YELLOW}{C.BOLD}{'='*74}{C.RESET}")
+        det = adcs.get("detect", {})
+        print(f"  {C.BOLD}▸ 먼저 취약 여부 스캔:{C.RESET} {C.DIM}{det.get('ko','')}{C.RESET}")
+        _print_cmds(det.get("cmd", []), subs, indent="      ")
+        for t in det.get("tools", []):
+            print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
+        print(f"\n  {C.DIM}취약 템플릿이 나오면 해당 ESC 로 이동:{C.RESET}")
+        for esc, info in adcs.get("techniques", {}).items():
+            print(f"\n    {C.RED}{C.BOLD}{esc}{C.RESET}  {C.YELLOW}{info.get('ko','')}{C.RESET}")
+            if info.get("condition"):
+                print(f"      {C.GREY}조건: {info['condition']}{C.RESET}")
+            _print_cmds(info.get("cmd", []), subs, indent="      ")
+
     print(f"\n{C.DIM}[안내] PETS AD 모드는 인가된 모의해킹/실습용입니다. "
           f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
 
@@ -932,7 +975,13 @@ def _run_ad(args):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="PETS - wes.py CVE 를 실제 익스플로잇 도구로 매핑/추천",
+        prog="pets.py",
+        description=(
+            "PETS - Privilege Escalation Tool Suggester\n"
+            "  · 로컬 모드: wes.py 출력의 CVE 를 실제 익스플로잇 도구/PoC 로 매핑\n"
+            "  · AD 모드(--ad): BloodHound(bloodhound-python) JSON 의 권한상승 엣지를 도구로 매핑"
+        ),
+        epilog=EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("wes_output", nargs="?", help="wes.py 출력 파일 (텍스트 또는 CSV)")
@@ -953,6 +1002,13 @@ def main():
     ap.add_argument("--show-all", action="store_true", help="미매핑 CVE 전체 표시")
     ap.add_argument("--json", metavar="FILE", help="결과를 JSON 으로 저장")
     ap.add_argument("--no-color", action="store_true", help="색상 출력 끄기")
+
+    # 인자 없이 실행하면 배너 + 도움말(사용 예시 포함) 출력
+    if len(sys.argv) == 1:
+        print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
+        ap.print_help()
+        sys.exit(0)
+
     args = ap.parse_args()
 
     if args.no_color or not sys.stdout.isatty():

