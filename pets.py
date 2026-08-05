@@ -642,57 +642,108 @@ def _edge_priority(ad_db, key):
     return {"high": 0, "med": 1, "low": 2}.get(info.get("priority", "med"), 1)
 
 
-def print_ad_report(edges, props, ad_db, sid_map, nodes):
+def _print_cmds(cmds, subs, indent="        "):
+    for cmd in cmds:
+        c = _sub(cmd, subs)
+        if c.startswith("#"):
+            print(f"{indent}{C.GREY}{c}{C.RESET}")
+        else:
+            print(f"{indent}{C.GREEN}$ {c}{C.RESET}")
+
+
+def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
+    ctx = ctx or {}
+    belongs = ctx.get("belongs", set())
+    owned_sids = ctx.get("owned_sids", set())
+    owned_names = ctx.get("owned_names", [])
+    not_found = ctx.get("not_found", [])
+    subs = ctx.get("subs", {})
+
+    def is_owned(e):
+        return e["principal_sid"] in belongs
+
     print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
     nu, ng, nc = len(nodes["users"]), len(nodes["groups"]), len(nodes["computers"])
     n_edge = sum(len(v) for v in edges.values())
     n_prop = sum(len(v) for v in props.values())
     lowpriv_hits = sum(1 for v in edges.values() for e in v if e["lowpriv"])
+    owned_hits = sum(1 for v in edges.values() for e in v if is_owned(e))
+    owned_types = sum(1 for k in edges if any(is_owned(e) for e in edges[k]))
 
     print(f"{C.BOLD}[AD 요약]{C.RESET} 노드: 사용자 {nu} · 그룹 {ng} · 컴퓨터 {nc}  |  "
           f"악용 엣지 {C.GREEN}{n_edge}건{C.RESET} ({len(edges)}종) · 속성 기반 {n_prop}건")
+    if owned_names:
+        print(f"{C.GREEN}{C.BOLD}[OWNED]{C.RESET} 소유 계정: "
+              f"{C.GREEN}{', '.join(owned_names)}{C.RESET}"
+              f"{C.GREY}  ->  지금 바로 악용 가능: {C.RESET}{C.GREEN}{C.BOLD}{owned_types}종 {owned_hits}건{C.RESET}")
+        if not_found:
+            print(f"{C.YELLOW}[경고]{C.RESET} BloodHound 데이터에서 못 찾은 소유 계정: "
+                  f"{C.YELLOW}{', '.join(not_found)}{C.RESET}{C.GREY} (이름 철자/도메인 확인){C.RESET}")
     if lowpriv_hits:
         print(f"{C.RED}[주의]{C.RESET} 저권한 주체(Domain Users 등)가 보유한 엣지 "
-              f"{C.RED}{lowpriv_hits}건{C.RESET}{C.GREY} — 가장 먼저 확인하세요 (누구나 악용 가능){C.RESET}")
+              f"{C.RED}{lowpriv_hits}건{C.RESET}{C.GREY} — 누구나 악용 가능{C.RESET}")
+    # 범례 (owned 지정 시에만 ★ 안내 포함)
+    owned_leg = f"{C.GREEN}★OWNED{C.RESET}{C.DIM}=지금 악용 가능  {C.RESET}" if owned_names else ""
+    print(f"{C.DIM}[범례] {C.RESET}{owned_leg}"
+          f"{C.RED}<저권한>{C.DIM}=누구나 악용  {C.RESET}{C.GREY}(상속){C.DIM}=상속된 권한{C.RESET}")
     print()
 
     edb = ad_db.get("edges", {})
     pdb = ad_db.get("properties", {})
 
-    # 1) ACL 엣지 (우선순위 -> 저권한 주체 -> 건수)
+    # 엣지 정렬: owned 악용 가능 우선 -> 우선순위 -> 저권한 -> 건수
+    def edge_rank(k):
+        insts = edges[k]
+        has_owned = any(is_owned(e) for e in insts)
+        has_low = any(e["lowpriv"] for e in insts)
+        return (not has_owned, _edge_priority(ad_db, k), not has_low, -len(insts))
+
+    # 1) ACL 엣지
     print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
-    print(f"{C.GREEN}{C.BOLD} AD 권한상승 엣지 (BloodHound ACL/제어){C.RESET}")
+    title = " AD 권한상승 엣지 (BloodHound ACL/제어)"
+    if owned_names:
+        title += "   ★ = 소유 계정으로 즉시 실행 가능"
+    print(f"{C.GREEN}{C.BOLD}{title}{C.RESET}")
     print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
     if not edges:
         print(f"  {C.GREY}악용 가능한 ACL 엣지를 찾지 못했습니다.{C.RESET}")
-    for key in sorted(edges, key=lambda k: (_edge_priority(ad_db, k), -len(edges[k]))):
+    for key in sorted(edges, key=edge_rank):
         info = edb.get(key, {})
         insts = edges[key]
+        has_owned = any(is_owned(e) for e in insts)
         has_low = any(e["lowpriv"] for e in insts)
-        low_tag = f" {C.RED}[저권한 주체 포함!]{C.RESET}" if has_low else ""
+        tags = ""
+        if has_owned:
+            tags += f" {C.GREEN}{C.BOLD}[★ 즉시 실행 가능]{C.RESET}"
+        if has_low:
+            tags += f" {C.RED}[저권한 주체]{C.RESET}"
         print(f"\n{C.BOLD}● {C.RED}{key}{C.RESET} {C.DIM}({len(insts)}건){C.RESET}"
-              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}{low_tag}")
+              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}{tags}")
         if info.get("summary"):
             print(f"    {C.DIM}{info['summary']}{C.RESET}")
-        # 구체 인스턴스 (저권한 주체 우선, 최대 6개)
-        shown = sorted(insts, key=lambda e: (not e["lowpriv"], e["inherited"]))[:6]
+        # 인스턴스: owned -> 저권한 -> 비상속 순, 최대 8개
+        shown = sorted(insts, key=lambda e: (not is_owned(e), not e["lowpriv"], e["inherited"]))[:8]
         for e in shown:
-            mark = f" {C.RED}<저권한>{C.RESET}" if e["lowpriv"] else ""
+            if is_owned(e):
+                mark = f" {C.GREEN}{C.BOLD}★OWNED{C.RESET}"
+            elif e["lowpriv"]:
+                mark = f" {C.RED}<저권한>{C.RESET}"
+            else:
+                mark = ""
             inh = f" {C.GREY}(상속){C.RESET}" if e["inherited"] else ""
-            print(f"      {C.CYAN}{e['principal']}{C.RESET} --{key}--> "
+            pcolor = C.GREEN if is_owned(e) else C.CYAN
+            print(f"      {pcolor}{e['principal']}{C.RESET} --{key}--> "
                   f"{C.BOLD}{e['target']}{C.RESET} {C.GREY}[{e['target_type']}]{C.RESET}{mark}{inh}")
         if len(insts) > len(shown):
             print(f"      {C.GREY}... 그 외 {len(insts)-len(shown)}건{C.RESET}")
-        # 악용 방법
+        # 악용 방법 (명령은 소유 계정/도메인/DC 로 치환)
         for ab in info.get("abuse", []):
             print(f"      {C.MAGENTA}▸ {ab.get('when','')}{C.RESET}")
-            for cmd in ab.get("cmd", []):
-                print(f"        {C.GREEN}$ {cmd}{C.RESET}" if not cmd.startswith("#")
-                      else f"        {C.GREY}{cmd}{C.RESET}")
+            _print_cmds(ab.get("cmd", []), subs)
         for t in info.get("tools", []):
             print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
-    # 2) 속성 기반 (Kerberoast / AS-REP / 위임 등)
+    # 2) 속성 기반
     print(f"\n{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
     print(f"{C.MAGENTA}{C.BOLD} 속성 기반 공격 (Roast / 위임 / 기타){C.RESET}")
     print(f"{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
@@ -710,9 +761,7 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes):
             print(f"      {C.BOLD}{e['name']}{C.RESET}{extra}")
         if len(insts) > 8:
             print(f"      {C.GREY}... 그 외 {len(insts)-8}건{C.RESET}")
-        for cmd in info.get("cmd", []):
-            print(f"        {C.GREEN}$ {cmd}{C.RESET}" if not cmd.startswith("#")
-                  else f"        {C.GREY}{cmd}{C.RESET}")
+        _print_cmds(info.get("cmd", []), subs)
         for t in info.get("tools", []):
             print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
@@ -720,11 +769,96 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes):
           f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
 
 
-def build_ad_json(edges, props):
-    return {
+def build_ad_json(edges, props, ctx=None):
+    out = {
         "edges": {k: v for k, v in edges.items()},
         "properties": {k: v for k, v in props.items()},
     }
+    if ctx and ctx.get("owned_names"):
+        out["owned"] = {
+            "accounts": ctx["owned_names"],
+            "not_found": ctx.get("not_found", []),
+            "actionable_now": [
+                {"edge": k, "principal": e["principal"], "target": e["target"]}
+                for k, v in edges.items() for e in v
+                if e["principal_sid"] in ctx["belongs"]
+            ],
+        }
+    return out
+
+
+# --- owned(장악 계정) 처리 ------------------------------------------------
+def resolve_owned(owned_args, sid_map, nodes):
+    """--owned 로 받은 계정들을 SID 로 해석하고, 그 계정이 '될 수 있는' SID 집합
+    (자기 자신 + 소속 그룹 + 저권한 그룹)을 계산해 반환."""
+    # 이름(전체/로컬파트) -> SID 색인
+    name_to_sid = {}
+    for sid, info in sid_map.items():
+        up = info["name"].upper()
+        name_to_sid.setdefault(up, sid)
+        name_to_sid.setdefault(up.split("@")[0], sid)
+
+    owned_names, owned_sids, not_found = [], set(), []
+    for raw in owned_args:
+        name = raw.split(":", 1)[0].strip()          # user 또는 user:pass
+        owned_names.append(name)
+        sid = name_to_sid.get(name.upper()) or name_to_sid.get(name.upper().split("@")[0])
+        if sid:
+            owned_sids.add(sid)
+        else:
+            not_found.append(name)
+
+    belongs = set(owned_sids)
+    # 그룹 멤버십(직접) 맵: group_sid -> {member_sid...}
+    group_members = {}
+    for g in nodes["groups"]:
+        mems = set()
+        for m in g.get("Members", []) or []:
+            ms = m.get("ObjectIdentifier") if isinstance(m, dict) else None
+            if ms:
+                mems.add(ms)
+        group_members[g.get("_sid")] = mems
+    # 전이적 폐쇄: owned 가 속한 모든 그룹
+    changed = True
+    while changed:
+        changed = False
+        for gsid, mems in group_members.items():
+            if gsid and gsid not in belongs and (mems & belongs):
+                belongs.add(gsid)
+                changed = True
+    # 인증된 도메인 사용자는 암묵적으로 저권한 그룹 소속 -> 해당 엣지도 즉시 악용 가능
+    if owned_sids:
+        for sid, info in sid_map.items():
+            if any(tok in info["name"].upper() for tok in LOWPRIV_PRINCIPALS):
+                belongs.add(sid)
+
+    return owned_names, owned_sids, belongs, not_found
+
+
+def build_subs(owned_args, domain_override, dc, nodes, sid_map):
+    """예시 명령의 도메인/계정/DC 를 실제 값으로 치환하기 위한 표."""
+    domain = domain_override
+    if not domain and nodes["domains"]:
+        domain = nodes["domains"][0].get("_name")
+    if not domain and owned_args and "@" in owned_args[0]:
+        domain = owned_args[0].split(":", 1)[0].split("@", 1)[1]
+    domain = (domain or "corp.local").lower()
+
+    subs = {"corp.local": domain, "CORP.LOCAL": domain.upper(), "dc01": dc or "dc01"}
+    if owned_args:
+        first = owned_args[0].split(":", 1)
+        sam = first[0].split("@", 1)[0]
+        if sam:
+            subs["attacker"] = sam
+        if len(first) == 2 and first[1]:
+            subs["Passw0rd!"] = first[1]
+    return subs
+
+
+def _sub(text, subs):
+    for k, v in subs.items():
+        text = text.replace(k, v)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -734,10 +868,17 @@ def _run_ad(args):
     ad_db = load_ad_db(args.ad_db)
     sid_map, nodes = parse_bloodhound(args.json_path)
     edges, props = analyze_ad(sid_map, nodes)
-    print_ad_report(edges, props, ad_db, sid_map, nodes)
+
+    owned_args = [x.strip() for x in (args.owned or "").split(",") if x.strip()]
+    owned_names, owned_sids, belongs, not_found = resolve_owned(owned_args, sid_map, nodes)
+    subs = build_subs(owned_args, args.domain, args.dc, nodes, sid_map)
+    ctx = {"owned_names": owned_names, "owned_sids": owned_sids,
+           "belongs": belongs, "not_found": not_found, "subs": subs}
+
+    print_ad_report(edges, props, ad_db, sid_map, nodes, ctx)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(build_ad_json(edges, props), f, ensure_ascii=False, indent=2)
+            json.dump(build_ad_json(edges, props, ctx), f, ensure_ascii=False, indent=2)
         print(f"[+] JSON 결과 저장: {args.json}")
 
 
@@ -751,6 +892,11 @@ def main():
                     help="AD 모드: BloodHound(bloodhound-python) JSON 을 분석")
     ap.add_argument("--json-path", dest="json_path",
                     help="[--ad 필수] bloodhound-python JSON 들이 있는 디렉터리(또는 단일 파일)")
+    ap.add_argument("--owned", metavar="ACCT[,ACCT...]",
+                    help="[--ad] 장악한 계정(들). 'user' 또는 'user:pass' / 콤마 구분. "
+                         "해당 계정이 즉시 악용 가능한 엣지를 최상위 강조하고 예시 명령을 치환")
+    ap.add_argument("--dc", help="[--ad] 예시 명령에 넣을 DC 호스트명 (기본: dc01)")
+    ap.add_argument("--domain", help="[--ad] 예시 명령에 넣을 도메인 (기본: 데이터에서 자동 감지)")
     ap.add_argument("--db", help="지식베이스 JSON 경로 (기본: 스크립트 옆 exploit_db.json)")
     ap.add_argument("--ad-db", dest="ad_db",
                     help="AD 지식베이스 경로 (기본: 스크립트 옆 ad_edges.json)")
