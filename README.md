@@ -2,7 +2,7 @@
 
 > `wes.py` 는 **무엇이 취약한지**를 알려준다. **PETS** 는 **그래서 무엇으로 뚫는지**를 알려준다.
 
-OSCP/CPTS 실습이나 인가된 모의해킹에서 [wes.py (Windows-Exploit-Suggester-NG)](https://github.com/bitsadmin/wesng)
+OSCP/CPTS 실습 및 HTB 문제 풀이 중 [wes.py (Windows-Exploit-Suggester-NG)](https://github.com/bitsadmin/wesng)
 결과는 CVE 가 수십~수백 개씩 쏟아져 실제로 쓸만한 게 뭔지 고르기 힘들다.
 
 PETS 는 wes.py 출력을 파싱해 CVE 를 인식하고, **실제로 존재하는 익스플로잇 도구/PoC**
@@ -183,7 +183,7 @@ RottenPotatoNG · EfsPotato · SigmaPotato · Churrasco
 
 ## 면책 / Legal
 
-PETS 는 **인가된** 모의해킹, CTF, OSCP/CPTS 등 학습 목적의 참고 도구다.
+PETS 는 **인가된** CTF, OSCP/CPTS, Hack The Box 등 학습 목적의 참고 도구다.
 추천된 익스플로잇을 실행하기 전에 반드시 대상에 대한 정당한 권한을 확인할 것.
 본 도구 및 연결된 익스플로잇 사용에 따른 책임은 사용자 본인에게 있다.
 
