@@ -139,6 +139,11 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 각 엣지마다 **무엇을 뜻하는지 + 대상 유형별 악용 절차 + 바로 복붙 가능한 명령 + 도구 링크**를
 함께 출력한다. 우선순위(high/med/low)와 건수로 정렬된다.
 
+- **⚡ 즉시 실행 가능 액션 플랜(상단)** — ACL 엣지·측면이동·Kerberoast/AS-REP 중 **소유 계정으로
+  지금 당장 실행 가능한 것(★OWNED)과 누구나 가능한 것(<저권한>)만** 골라, 대표 명령 한 줄과 함께
+  리포트 최상단에 우선순위로 표시한다. (예: HTB *Active* → `Kerberoastable: ADMINISTRATOR` 가 1번)
+  상세 절차/대안 명령은 그 아래 각 섹션에 그대로 유지된다.
+
 ## 지식베이스 확장하기
 
 `exploit_db.json` 의 `cve_map` 에 항목을 추가하면 바로 반영된다.
