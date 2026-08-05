@@ -15,6 +15,9 @@ PETS 는 wes.py 출력을 파싱해 CVE 를 인식하고, **실제로 존재하�
   대상 OS, 도구 종류(`exe`/`ps1`/`py`/`msf`), 배포 URL, 사용 노트를 담았다.
 - **노이즈 제거 + 우선순위화**: 바로 실행 가능한 도구(exe/ps1)와 권한상승 영향(EoP/Domain Admin)이
   큰 CVE 를 위로 정렬. 도구 미매핑 CVE 는 접어 둔다(`--show-all` 로 전체).
+- **커널은 최후 수단**: 커널 익스플로잇은 BSOD/리셋 위험이 있어 실전·시험 권장 순서상 마지막이다.
+  PETS 는 커널 항목(`technique: kernel-*`)에 페널티를 줘 하위로 내리고 `[커널·최후수단]` 태그를 붙인다.
+  서비스 오구성·권한남용(Potato)·자격증명 같은 비커널 경로를 먼저 노출한다.
 - **권한 기반 기법 안내(Potato 계열)**: CVE 와 무관하게 `SeImpersonatePrivilege` 보유 시
   쓰는 PrintSpoofer/GodPotato/JuicyPotato 등을 탐지 OS 에 맞춰 항상 함께 추천.
 - **입력 형식 자동 감지**: wes.py 기본 텍스트 출력과 CSV(`-o out.csv`) 모두 지원. wes 버전별

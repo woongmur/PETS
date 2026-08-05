@@ -253,6 +253,11 @@ def os_tokens(text):
 # ---------------------------------------------------------------------------
 # 매핑
 # ---------------------------------------------------------------------------
+def is_kernel(db_entry):
+    """커널 익스플로잇 여부 (technique 가 kernel-* 로 시작)."""
+    return (db_entry.get("technique") or "").startswith("kernel")
+
+
 def impact_score(finding):
     imp = (finding.get("impact") or "").lower().strip()
     sev = (finding.get("severity") or "").lower().strip()
@@ -286,7 +291,9 @@ def map_findings(findings, db):
             if ttype in ("ps1", "exe"):
                 tool_bonus = 10  # 바로 실행 가능한 도구 우대
                 break
-        return (-(impact_score(f) + tool_bonus), f["cve"])
+        # 커널 익스플로잇은 최후 수단(BSOD 위험) -> 페널티로 하위 배치
+        penalty = 25 if is_kernel(f["db"]) else 0
+        return (-(impact_score(f) + tool_bonus - penalty), f["cve"])
 
     mapped.sort(key=sort_key)
     unmapped.sort(key=lambda f: (-impact_score(f), f["cve"]))
@@ -341,6 +348,8 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
     print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
     print(f"{C.GREEN}{C.BOLD} 우선순위: 익스플로잇 도구가 존재하는 CVE{C.RESET}")
     print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
+    print(f"  {C.GREY}권장 순서: 서비스 오구성 · 권한남용(Potato) · 자격증명 먼저 시도 후 "
+          f"{C.YELLOW}커널은 최후 수단{C.GREY}(BSOD/리셋 위험). 커널 항목은 하위 배치.{C.RESET}")
     if not mapped:
         print(f"  {C.GREY}매핑된 CVE 가 없습니다. 아래 권한 기반 기법을 확인하세요.{C.RESET}")
     for i, f in enumerate(mapped, 1):
@@ -348,7 +357,8 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
         aliases = db.get("aliases", [])
         alias_str = f" {C.YELLOW}({', '.join(aliases)}){C.RESET}" if aliases else ""
         badge = scope_badge(db.get("scope", "local"))
-        print(f"\n{C.BOLD}[{i:>2}] {C.RED}{f['cve']}{C.RESET}{alias_str} {badge}"
+        kflag = f" {C.YELLOW}[커널·최후수단]{C.RESET}" if is_kernel(db) else ""
+        print(f"\n{C.BOLD}[{i:>2}] {C.RED}{f['cve']}{C.RESET}{alias_str} {badge}{kflag}"
               f"  {C.DIM}{db.get('impact','')}{C.RESET}")
         print(f"     {C.DIM}{db.get('name','')}{C.RESET}")
         if db.get("os"):
