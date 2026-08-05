@@ -819,69 +819,6 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
 
     edb = ad_db.get("edges", {})
     pdb = ad_db.get("properties", {})
-    ldb = ad_db.get("lateral", {})
-    lateral = ctx.get("lateral", {})
-
-    # ===== 0) 즉시 실행 가능한 공격 (전 섹션 통합, 우선순위 상단 노출) =====
-    # tier: 0=소유 계정, 1=저권한(누구나). 그 외(경로 의존)는 상단 블록에서 제외.
-    actions = []
-
-    def _cmd0(kb):
-        ab = kb.get("abuse", [])
-        if ab and ab[0].get("cmd"):
-            return ab[0]["cmd"][0]
-        return (kb.get("cmd") or [""])[0]
-
-    for k, insts in edges.items():
-        cmd0 = _cmd0(edb.get(k, {}))
-        for e in insts:
-            if is_owned(e):
-                tier, mk, mc = 0, "★OWNED", C.GREEN
-            elif e["lowpriv"]:
-                tier, mk, mc = 1, "<저권한>", C.RED
-            else:
-                continue
-            actions.append((tier, _edge_priority(ad_db, k),
-                            f"{k}: {e['principal']} → {e['target']}", cmd0, mk, mc))
-    for atype, insts in lateral.items():
-        cmd0 = _cmd0(ldb.get(atype, {}))
-        for x in insts:
-            if x["owned"]:
-                tier, mk, mc = 0, "★OWNED", C.GREEN
-            elif x["lowpriv"]:
-                tier, mk, mc = 1, "<저권한>", C.RED
-            else:
-                continue
-            actions.append((tier, _edge_priority(ad_db, atype),
-                            f"{atype}: → {x['computer']}",
-                            cmd0.replace("TARGET_HOST", x["computer"]), mk, mc))
-    for k in ("Kerberoastable", "ASREPRoastable"):
-        if k not in props:
-            continue
-        if k == "Kerberoastable" and not owned_names:
-            continue  # TGS 요청에 유효 크레덴셜 필요
-        tier = 0 if owned_names else 1
-        cmd0 = _cmd0(pdb.get(k, {}))
-        tgt = props[k][0]["name"] if props[k] else ""
-        mk = "★creds" if owned_names else "no-pass"
-        actions.append((tier, _edge_priority(ad_db, k),
-                        f"{k}: {tgt}" + (f" 외 {len(props[k])-1}" if len(props[k]) > 1 else ""),
-                        cmd0, mk, C.GREEN))
-
-    actions.sort(key=lambda a: (a[0], a[1]))
-    if actions:
-        print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
-        print(f"{C.GREEN}{C.BOLD} ⚡ 지금 당장 실행 가능한 공격 (우선순위){C.RESET}"
-              + (f"{C.GREY}  — 소유: {', '.join(owned_names)}{C.RESET}" if owned_names else ""))
-        print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
-        for i, (_tier, _pri, label, cmd, mk, mc) in enumerate(actions[:15], 1):
-            print(f"  {C.BOLD}[{i:>2}]{C.RESET} {mc}{C.BOLD}{mk}{C.RESET}  {C.YELLOW}{label}{C.RESET}")
-            if cmd:
-                print(f"       {C.GREEN}$ {_sub(cmd, subs)}{C.RESET}")
-        if len(actions) > 15:
-            print(f"  {C.GREY}... 그 외 {len(actions)-15}건 (아래 상세 섹션 참고){C.RESET}")
-        print(f"  {C.DIM}상세 절차/대안 명령은 아래 각 섹션 참고.{C.RESET}")
-        print()
 
     # 엣지 정렬: owned 악용 가능 우선 -> 우선순위 -> 저권한 -> 건수
     def edge_rank(k):
@@ -1009,6 +946,70 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
             if info.get("condition"):
                 print(f"      {C.GREY}조건: {info['condition']}{C.RESET}")
             _print_cmds(info.get("cmd", []), subs, indent="      ")
+
+    # ===== 최종) 즉시 실행 가능한 공격 (전 섹션 통합) — 리포트 맨 아래 =====
+    # 가독성: 프롬프트 바로 위에 오도록 맨 끝에 출력하고, 최우선순위를 맨 아래에 배치.
+    def _cmds(kb):
+        ab = kb.get("abuse", [])
+        if ab and ab[0].get("cmd"):
+            return ab[0]["cmd"]
+        return kb.get("cmd", [])
+
+    actions = []  # (tier, priority, label, [cmds], marker, color)
+    for k, insts in edges.items():
+        cmds = _cmds(edb.get(k, {}))
+        for e in insts:
+            if is_owned(e):
+                tier, mk, mc = 0, "★OWNED", C.GREEN
+            elif e["lowpriv"]:
+                tier, mk, mc = 1, "<저권한>", C.RED
+            else:
+                continue
+            actions.append((tier, _edge_priority(ad_db, k),
+                            f"{k}: {e['principal']} → {e['target']}", cmds, mk, mc))
+    for atype, insts in lateral.items():
+        cmds = _cmds(ldb.get(atype, {}))
+        for x in insts:
+            if x["owned"]:
+                tier, mk, mc = 0, "★OWNED", C.GREEN
+            elif x["lowpriv"]:
+                tier, mk, mc = 1, "<저권한>", C.RED
+            else:
+                continue
+            hc = [c.replace("TARGET_HOST", x["computer"]) for c in cmds]
+            actions.append((tier, _edge_priority(ad_db, atype),
+                            f"{atype}: → {x['computer']}", hc, mk, mc))
+    for k in ("Kerberoastable", "ASREPRoastable"):
+        if k not in props:
+            continue
+        if k == "Kerberoastable" and not owned_names:
+            continue  # TGS 요청에 유효 크레덴셜 필요
+        tier = 0 if owned_names else 1
+        cmds = _cmds(pdb.get(k, {}))   # 요청 + hashcat 크랙 모두 포함
+        tgt = props[k][0]["name"] if props[k] else ""
+        mk = "★creds" if owned_names else "no-pass"
+        actions.append((tier, _edge_priority(ad_db, k),
+                        f"{k}: {tgt}" + (f" 외 {len(props[k])-1}" if len(props[k]) > 1 else ""),
+                        cmds, mk, C.GREEN))
+
+    if actions:
+        actions.sort(key=lambda a: (a[0], a[1]))
+        top = actions[:15]
+        print(f"\n{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"{C.GREEN}{C.BOLD} ⚡ 지금 당장 실행 가능한 공격  (아래로 갈수록 우선순위 높음){C.RESET}"
+              + (f"{C.GREY}  — 소유: {', '.join(owned_names)}{C.RESET}" if owned_names else ""))
+        print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
+        if len(actions) > len(top):
+            print(f"  {C.GREY}... 그 외 {len(actions)-len(top)}건 (위 상세 섹션 참고){C.RESET}")
+        # 우선순위 낮은 것부터(위) -> 높은 것(아래) 순으로 출력
+        for i, (_t, _p, label, cmds, mk, mc) in list(enumerate(top, 1))[::-1]:
+            print(f"\n  {C.BOLD}[{i:>2}]{C.RESET} {mc}{C.BOLD}{mk}{C.RESET}  {C.YELLOW}{label}{C.RESET}")
+            for c in cmds:
+                cc = _sub(c, subs)
+                if cc.strip().startswith("#"):
+                    print(f"       {C.GREY}{cc}{C.RESET}")
+                else:
+                    print(f"       {C.GREEN}$ {cc}{C.RESET}")
 
     print(f"\n{C.DIM}[안내] PETS AD 모드는 인가된 모의해킹/실습용입니다. "
           f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
