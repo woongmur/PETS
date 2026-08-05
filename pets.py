@@ -481,6 +481,19 @@ DCSYNC_RIGHTS = {"getchanges", "getchangesall", "getchangesinfilteredset"}
 # "누구나" 악용 가능한 저권한 주체 (우선순위 상향)
 LOWPRIV_PRINCIPALS = ("DOMAIN USERS", "AUTHENTICATED USERS", "EVERYONE",
                       "DOMAIN COMPUTERS", "ANONYMOUS", "GUESTS", "USERS")
+# 이미 최고 권한인 주체(Tier-0). 이들이 principal 인 엣지는 권한상승과 무관 -> 기본 숨김.
+# (Account/Backup/Server Operators, DNSAdmins 등 '상승 발판'이 되는 그룹은 제외)
+TIER0_GROUP_TOKENS = ("DOMAIN ADMINS", "ENTERPRISE ADMINS", "SCHEMA ADMINS",
+                      "ADMINISTRATORS", "DOMAIN CONTROLLERS", "KEY ADMINS")
+# --owned 크레덴셜만 있으면 바로 수행 가능한 속성 기반 공격
+OWNED_ACTIONABLE_PROPS = ("Kerberoastable", "ASREPRoastable")
+
+
+def is_tier0_principal(name):
+    up = (name or "").upper()
+    if up.split("@")[0].strip() == "ADMINISTRATOR":   # 빌트인 관리자 계정(RID-500)
+        return True
+    return any(tok in up for tok in TIER0_GROUP_TOKENS)
 
 
 def load_ad_db(path=None):
@@ -659,8 +672,22 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
     not_found = ctx.get("not_found", [])
     subs = ctx.get("subs", {})
 
+    show_privileged = ctx.get("show_privileged", False)
+
     def is_owned(e):
         return e["principal_sid"] in belongs
+
+    # Tier-0(이미 최고권한) 주체가 principal 인 엣지는 기본 숨김 -> 노이즈 제거
+    filtered, hidden_cnt = {}, 0
+    for k, insts in edges.items():
+        keep = [e for e in insts if show_privileged or not is_tier0_principal(e["principal"])]
+        hidden_cnt += len(insts) - len(keep)
+        if keep:
+            filtered[k] = keep
+    edges = filtered
+
+    # 속성 기반 중 owned 크레덴셜로 즉시 가능한 것 (Kerberoast/AS-REP)
+    prop_actionable = [k for k in props if owned_names and k in OWNED_ACTIONABLE_PROPS]
 
     print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
     nu, ng, nc = len(nodes["users"]), len(nodes["groups"]), len(nodes["computers"])
@@ -669,13 +696,26 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
     lowpriv_hits = sum(1 for v in edges.values() for e in v if e["lowpriv"])
     owned_hits = sum(1 for v in edges.values() for e in v if is_owned(e))
     owned_types = sum(1 for k in edges if any(is_owned(e) for e in edges[k]))
+    owned_prop_hits = sum(len(props[k]) for k in prop_actionable)
 
     print(f"{C.BOLD}[AD 요약]{C.RESET} 노드: 사용자 {nu} · 그룹 {ng} · 컴퓨터 {nc}  |  "
           f"악용 엣지 {C.GREEN}{n_edge}건{C.RESET} ({len(edges)}종) · 속성 기반 {n_prop}건")
+    if hidden_cnt:
+        print(f"{C.GREY}[필터]{C.RESET} 특권 주체(DA/EA/Administrators 등)가 principal 인 엣지 "
+              f"{C.GREY}{hidden_cnt}건 숨김 — 권한상승과 무관. --show-privileged 로 표시{C.RESET}")
     if owned_names:
+        tot_types = owned_types + len(prop_actionable)
+        tot_hits = owned_hits + owned_prop_hits
         print(f"{C.GREEN}{C.BOLD}[OWNED]{C.RESET} 소유 계정: "
               f"{C.GREEN}{', '.join(owned_names)}{C.RESET}"
-              f"{C.GREY}  ->  지금 바로 악용 가능: {C.RESET}{C.GREEN}{C.BOLD}{owned_types}종 {owned_hits}건{C.RESET}")
+              f"{C.GREY}  ->  지금 바로 악용 가능: {C.RESET}{C.GREEN}{C.BOLD}{tot_types}종 {tot_hits}건{C.RESET}")
+        if prop_actionable:
+            print(f"{C.GREEN}       ★ {C.RESET}{C.GREY}크레덴셜 보유 -> {C.RESET}"
+                  f"{C.GREEN}{', '.join(prop_actionable)}{C.RESET}{C.GREY} 즉시 수행 가능 "
+                  f"(아래 '속성 기반' 참고){C.RESET}")
+        if not owned_hits and not prop_actionable:
+            print(f"{C.YELLOW}       ! {C.RESET}{C.GREY}소유 계정이 직접 가진 엣지가 없습니다. "
+                  f"아래 속성 기반(Kerberoast 등)·저권한 엣지를 확인하세요.{C.RESET}")
         if not_found:
             print(f"{C.YELLOW}[경고]{C.RESET} BloodHound 데이터에서 못 찾은 소유 계정: "
                   f"{C.YELLOW}{', '.join(not_found)}{C.RESET}{C.GREY} (이름 철자/도메인 확인){C.RESET}")
@@ -706,7 +746,10 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
     print(f"{C.GREEN}{C.BOLD}{title}{C.RESET}")
     print(f"{C.GREEN}{C.BOLD}{'='*74}{C.RESET}")
     if not edges:
-        print(f"  {C.GREY}악용 가능한 ACL 엣지를 찾지 못했습니다.{C.RESET}")
+        msg = "권한상승에 쓸 만한 ACL 엣지가 없습니다."
+        if hidden_cnt:
+            msg += " (특권 주체 엣지만 존재 -> 아래 속성 기반 공격 확인)"
+        print(f"  {C.GREY}{msg}{C.RESET}")
     for key in sorted(edges, key=edge_rank):
         info = edb.get(key, {})
         insts = edges[key]
@@ -749,11 +792,13 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
     print(f"{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
     if not props:
         print(f"  {C.GREY}속성 기반 대상이 없습니다.{C.RESET}")
-    for key in sorted(props, key=lambda k: _edge_priority(ad_db, k)):
+    # owned 크레덴셜로 즉시 가능한 것(Kerberoast/AS-REP) 먼저, 그다음 우선순위
+    for key in sorted(props, key=lambda k: (k not in prop_actionable, _edge_priority(ad_db, k))):
         info = pdb.get(key, {})
         insts = props[key]
+        star = f" {C.GREEN}{C.BOLD}[★ 소유 계정으로 즉시 실행]{C.RESET}" if key in prop_actionable else ""
         print(f"\n{C.BOLD}● {C.RED}{key}{C.RESET} {C.DIM}({len(insts)}건){C.RESET}"
-              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}")
+              f"  {C.YELLOW}{info.get('ko','')}{C.RESET}{star}")
         if info.get("summary"):
             print(f"    {C.DIM}{info['summary']}{C.RESET}")
         for e in insts[:8]:
@@ -844,7 +889,9 @@ def build_subs(owned_args, domain_override, dc, nodes, sid_map):
         domain = owned_args[0].split(":", 1)[0].split("@", 1)[1]
     domain = (domain or "corp.local").lower()
 
-    subs = {"corp.local": domain, "CORP.LOCAL": domain.upper(), "dc01": dc or "dc01"}
+    dn = ",".join(f"DC={p}" for p in domain.split("."))
+    subs = {"corp.local": domain, "CORP.LOCAL": domain.upper(), "dc01": dc or "dc01",
+            "DC=corp,DC=local": dn}
     if owned_args:
         first = owned_args[0].split(":", 1)
         sam = first[0].split("@", 1)[0]
@@ -873,7 +920,8 @@ def _run_ad(args):
     owned_names, owned_sids, belongs, not_found = resolve_owned(owned_args, sid_map, nodes)
     subs = build_subs(owned_args, args.domain, args.dc, nodes, sid_map)
     ctx = {"owned_names": owned_names, "owned_sids": owned_sids,
-           "belongs": belongs, "not_found": not_found, "subs": subs}
+           "belongs": belongs, "not_found": not_found, "subs": subs,
+           "show_privileged": args.show_privileged}
 
     print_ad_report(edges, props, ad_db, sid_map, nodes, ctx)
     if args.json:
@@ -897,6 +945,8 @@ def main():
                          "해당 계정이 즉시 악용 가능한 엣지를 최상위 강조하고 예시 명령을 치환")
     ap.add_argument("--dc", help="[--ad] 예시 명령에 넣을 DC 호스트명 (기본: dc01)")
     ap.add_argument("--domain", help="[--ad] 예시 명령에 넣을 도메인 (기본: 데이터에서 자동 감지)")
+    ap.add_argument("--show-privileged", dest="show_privileged", action="store_true",
+                    help="[--ad] 특권 주체(DA/EA 등)가 principal 인 엣지도 표시 (기본 숨김)")
     ap.add_argument("--db", help="지식베이스 JSON 경로 (기본: 스크립트 옆 exploit_db.json)")
     ap.add_argument("--ad-db", dest="ad_db",
                     help="AD 지식베이스 경로 (기본: 스크립트 옆 ad_edges.json)")

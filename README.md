@@ -54,6 +54,7 @@ python3 pets.py wes_out.txt
 | `--owned ACCT` | `[--ad]` 장악한 계정(들). `user` 또는 `user:pass`, 콤마 구분. 즉시 악용 가능한 엣지 강조 + 명령 치환 |
 | `--dc HOST` | `[--ad]` 예시 명령에 넣을 DC 호스트명 (기본: `dc01`) |
 | `--domain DOM` | `[--ad]` 예시 명령에 넣을 도메인 (기본: 데이터에서 자동 감지) |
+| `--show-privileged` | `[--ad]` 특권 주체(DA/EA/Administrators 등)가 principal 인 엣지도 표시 (기본 숨김) |
 | `--show-all` | 도구가 매핑되지 않은 CVE 도 전부 표시 |
 | `--json FILE` | 결과를 JSON 으로 저장 (자동화/연동용, wes·AD 모드 공통) |
 | `--db PATH` | CVE 지식베이스 경로 지정 (기본: 스크립트 옆 `exploit_db.json`) |
@@ -124,6 +125,13 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 - **속성 기반** — Kerberoastable(SPN) · AS-REP Roastable · 제약/무제약 위임 · PasswordNotReqd · SIDHistory
 - **저권한 주체 강조** — `Domain Users`/`Authenticated Users`/`Everyone` 등이 가진 엣지를
   `[저권한 주체 포함!]` 로 최상위 강조 (누구나 악용 가능 = 최우선 확인 대상)
+- **노이즈 제거(특권 주체 필터)** — `Domain Admins`/`Enterprise Admins`/`Administrators` 처럼
+  이미 최고 권한인 주체가 principal 인 엣지는 권한상승과 무관하므로 **기본 숨김**한다.
+  (BloodHound 데이터는 이런 기본 ACL 이 대부분이라, 이 필터가 수백 건을 수 건으로 줄여 준다.
+  전체를 보려면 `--show-privileged`.)
+- **owned 크레덴셜로 즉시 가능한 공격 승격** — `--owned` 를 주면 유효 크레덴셜만으로 되는
+  Kerberoast/AS-REP Roast 를 `[★ 소유 계정으로 즉시 실행]` 으로 올려 카운트한다.
+  (예: HTB *Active* — `svc_tgs` 크레덴셜로 `Administrator` 를 Kerberoast 하는 실제 경로가 바로 강조됨)
 
 각 엣지마다 **무엇을 뜻하는지 + 대상 유형별 악용 절차 + 바로 복붙 가능한 명령 + 도구 링크**를
 함께 출력한다. 우선순위(high/med/low)와 건수로 정렬된다.
