@@ -120,9 +120,12 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 
 - **ACL 엣지** — `GenericAll` · `GenericWrite` · `WriteDacl` · `WriteOwner` · `Owns` ·
   `ForceChangePassword` · `AddMember` · `AllExtendedRights` · `AddKeyCredentialLink`(Shadow Cred) ·
-  `ReadLAPSPassword` · `ReadGMSAPassword` · `AddAllowedToAct`(RBCD) · `WriteSPN` · GPO 쓰기
+  `ReadLAPSPassword` · `ReadGMSAPassword` · `AddAllowedToAct`(RBCD) · `WriteSPN` · GPO 쓰기 ·
+  `WriteGPLink` · `WriteAccountRestrictions` · `SyncLAPSPassword` · `DumpSMSAPassword` (BloodHound CE 포함)
 - **DCSync** — 도메인 객체의 `GetChanges` + `GetChangesAll` 조합을 자동 판정
 - **속성 기반** — Kerberoastable(SPN) · AS-REP Roastable · 제약/무제약 위임 · PasswordNotReqd · SIDHistory
+- **측면이동** — 컴퓨터 로컬그룹 기반 `LocalAdmin` · `RDP` · `WinRM` · `DCOM` 접근 (owned 계정 우선 강조)
+- **AD CS (ESC1~13)** — bloodhound-python 이 수집 못 하므로 Certipy 점검 명령 + 각 ESC 악용법을 상시 안내
 - **저권한 주체 강조** — `Domain Users`/`Authenticated Users`/`Everyone` 등이 가진 엣지를
   `[저권한 주체 포함!]` 로 최상위 강조 (누구나 악용 가능 = 최우선 확인 대상)
 - **노이즈 제거(특권 주체 필터)** — `Domain Admins`/`Enterprise Admins`/`Administrators` 처럼
@@ -159,10 +162,15 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 
 ## 수록 도구 (일부)
 
-**커널/LPE PoC**: MS16-032(CVE-2016-0099) · MS15-051(CVE-2015-1701) · MS14-058(CVE-2014-4113) ·
-MS14-068(CVE-2014-6324) · KiTrap0D(CVE-2010-0232) · CVE-2020-0668 · CVE-2020-0787 · CVE-2020-0796(SMBGhost) ·
-CVE-2021-1732 · CVE-2022-21882 · CVE-2023-21768(afd.sys) · CVE-2023-28252(CLFS) · CVE-2021-40449 ·
-HiveNightmare(CVE-2021-36934) · PrintNightmare(CVE-2021-1675/34527) · Zerologon(CVE-2020-1472) 외
+**커널/LPE PoC** (49개 CVE): MS08-067 · EternalBlue(MS17-010) · MS16-032/051 · MS15-051 · MS14-058/068 ·
+KiTrap0D · NDProxy(CVE-2013-5065) · CVE-2018-8120 · CVE-2020-0668/0787/0796(SMBGhost) · CVE-2021-1732 ·
+CVE-2021-31956 · SpoolFool(CVE-2022-21999) · CLFS(CVE-2022-24521/37969/2023-28252) · CVE-2023-21768(afd) ·
+CVE-2023-29336 · CVE-2024-26229/35250 · HiveNightmare · PrintNightmare · Zerologon · noPac · PetitPotam ·
+Certifried(CVE-2022-26923) · Bronze Bit(CVE-2020-17049) · Drop-the-MIC(CVE-2019-1040) 외
+
+**설정 기반 LPE 체크리스트**: Unquoted Service Path · Weak Service/Binary/Registry Perms ·
+AlwaysInstallElevated · GPP cpassword · 저장된 자격증명 · DLL Hijacking · Writable Scheduled Task ·
+SeBackup/SeRestore · SeTakeOwnership (winPEAS/PowerUp/accesschk 명령 포함)
 
 **권한 기반(Potato 계열)**: PrintSpoofer · GodPotato · JuicyPotato · RoguePotato · SweetPotato ·
 RottenPotatoNG · EfsPotato · SigmaPotato · Churrasco
