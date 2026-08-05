@@ -433,12 +433,15 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all, config_lpe=
         for c in config_lpe:
             print(f"\n  {C.RED}●{C.RESET} {C.BOLD}{c['name']}{C.RESET}  {C.YELLOW}{c.get('ko','')}{C.RESET}")
             for d in c.get("detect", []):
-                tag = "" if d.strip().startswith(("#", "(")) else "$ "
-                print(f"      {C.CYAN}{tag}{d}{C.RESET}")
+                if d.strip().startswith(("#", "(")):
+                    print(f"      {C.GREY}{d}{C.RESET}")
+                else:
+                    print(f"      {_platform_tag(d)}{C.CYAN}$ {d}{C.RESET}")
             for ex in c.get("exploit", []):
-                tag = "" if ex.strip().startswith(("#", "(")) else "$ "
-                col = C.GREY if ex.strip().startswith(("#", "(")) else C.GREEN
-                print(f"      {col}{tag}{ex}{C.RESET}")
+                if ex.strip().startswith(("#", "(")):
+                    print(f"      {C.GREY}{ex}{C.RESET}")
+                else:
+                    print(f"      {_platform_tag(ex)}{C.GREEN}$ {ex}{C.RESET}")
             for t in c.get("tools", []):
                 print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
@@ -901,13 +904,53 @@ def _edge_priority(ad_db, key):
     return {"high": 0, "med": 1, "low": 2}.get(info.get("priority", "med"), 1)
 
 
+# 명령 실행 위치 자동 분류용 시그니처
+_KALI_SIG = ("impacket-", "certipy", "bloodyad", "net rpc", "nxc ", "netexec",
+             "crackmapexec", "evil-winrm", "xfreerdp", "gmsadumper", "pywhisker",
+             "hashcat", "gpp-decrypt", "secretsdump", "getuserspns", "getnpusers",
+             "ntlmrelayx", "petitpotam", "printerbug", "krbrelayx", "pylaps",
+             "pygpoabuse", "smbclient", "msfvenom", "responder", "targetedkerberoast",
+             ".py ", "python ", "python3 ", "sudo ", "gettgt", "getst", "addcomputer",
+             "dacledit", "owneredit", "changepasswd", "rbcd.py", "zerologon", "nopac")
+_WIN_SIG = ("powerview>", "import-module", "add-domain", "set-domain", "get-domain",
+            "new-gplink", "add-domaingroupmember", "add-domainobjectacl", "invoke-",
+            "new-object", "certify.exe", "whisker.exe", "sharpgpoabuse", "rubeus",
+            "mimikatz", "godpotato", "printspoofer", "juicypotato", "spoolfool",
+            "net group", "net user", "net localgroup", "reg add", "reg query",
+            "reg save", "sc config", "sc stop", "sc start", "sc qc", "schtasks",
+            "wmic ", "cmd /c", "cmd.exe", "msiexec", "takeown", "icacls", "whoami",
+            "accesschk", "findstr", "type ", "dir ", ".exe", "\\")
+
+
+def _platform(cmd):
+    """명령이 어디서 실행되는지 추정: 'WIN'(대상 윈도우 쉘) / 'KALI'(공격자 리눅스) / None(모호)."""
+    low = cmd.strip().lower()
+    for s in _KALI_SIG:      # Kali 시그니처 우선 (net rpc vs net group 구분)
+        if s in low:
+            return "KALI"
+    for s in _WIN_SIG:
+        if s in low:
+            return "WIN"
+    return None
+
+
+def _platform_tag(cmd):
+    plat = _platform(cmd)
+    if plat == "WIN":
+        return f"{C.YELLOW}[WIN ]{C.RESET} "
+    if plat == "KALI":
+        return f"{C.CYAN}[KALI]{C.RESET} "
+    return "       "   # 모호 -> 정렬용 공백
+
+
 def _print_cmds(cmds, subs, indent="        "):
     for cmd in cmds:
         c = _sub(cmd, subs)
-        if c.startswith("#"):
+        s = c.strip()
+        if s.startswith("#") or s.startswith("("):     # 주석/힌트
             print(f"{indent}{C.GREY}{c}{C.RESET}")
         else:
-            print(f"{indent}{C.GREEN}$ {c}{C.RESET}")
+            print(f"{indent}{_platform_tag(c)}{C.GREEN}$ {c}{C.RESET}")
 
 
 def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
@@ -972,6 +1015,8 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
     owned_leg = f"{C.GREEN}★OWNED{C.RESET}{C.DIM}=지금 악용 가능  {C.RESET}" if owned_names else ""
     print(f"{C.DIM}[범례] {C.RESET}{owned_leg}"
           f"{C.RED}<저권한>{C.DIM}=누구나 악용  {C.RESET}{C.GREY}(상속){C.DIM}=상속된 권한{C.RESET}")
+    print(f"{C.DIM}       모든 명령에 실행 위치 표시: {C.RESET}{C.YELLOW}[WIN ]{C.DIM}=대상 윈도우 쉘  "
+          f"{C.RESET}{C.CYAN}[KALI]{C.DIM}=공격자 리눅스{C.RESET}")
     print()
 
     edb = ad_db.get("edges", {})
@@ -1163,10 +1208,10 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
             print(f"\n  {C.BOLD}[{i:>2}]{C.RESET} {mc}{C.BOLD}{mk}{C.RESET}  {C.YELLOW}{label}{C.RESET}")
             for c in cmds:
                 cc = _sub(c, subs)
-                if cc.strip().startswith("#"):
+                if cc.strip().startswith(("#", "(")):
                     print(f"       {C.GREY}{cc}{C.RESET}")
                 else:
-                    print(f"       {C.GREEN}$ {cc}{C.RESET}")
+                    print(f"       {_platform_tag(cc)}{C.GREEN}$ {cc}{C.RESET}")
 
     # ===== 도메인 장악 경로(체인) — 최하단, 가장 중요한 근거 =====
     paths = ctx.get("paths", [])

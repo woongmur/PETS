@@ -139,6 +139,11 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 각 엣지마다 **무엇을 뜻하는지 + 대상 유형별 악용 절차 + 바로 복붙 가능한 명령 + 도구 링크**를
 함께 출력한다. 우선순위(high/med/low)와 건수로 정렬된다.
 
+- **명령 실행 위치 태그(`[WIN]`/`[KALI]`)** — 모든 출력 명령에 실행 위치를 자동 분류해 붙인다.
+  `[WIN]`=대상 윈도우 쉘(evil-winrm 등)에서 실행, `[KALI]`=공격자 리눅스에서 실행. `net rpc`(Samba)·
+  impacket·bloodyAD·certipy 는 리눅스 전용이라 윈도우 쉘에 붙여넣으면 실패하는데, 태그로 구분되어 헷갈리지
+  않는다. AD·설정 LPE·체인 등 명령이 나오는 모든 섹션에 적용된다.
+
 - **🎯 도메인 장악 경로(엣지 체이닝)** — 개별 엣지를 나열만 하지 않고, 소유 계정에서 시작해 **소속 그룹
   상속 + ACL 엣지를 이어붙여 도메인 장악(DCSync)/특권 그룹까지의 최단 경로**를 BFS 로 찾아, 각 홉의 명령
   까지 순서대로 출력한다. (예: HTB *Forest* → `svc-alfresco ∈ Account Operators ─GenericAll→ Exchange
