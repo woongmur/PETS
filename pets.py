@@ -587,18 +587,25 @@ def parse_bloodhound(json_path):
     sid_map = {}
     nodes = {"users": [], "groups": [], "computers": [], "domains": [],
              "gpos": [], "ous": [], "containers": []}
-    loaded = 0
+    loaded = parse_err = skipped_type = zip_seen = 0
     for fp in files:
         try:
-            with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                doc = json.load(f)
-        except (json.JSONDecodeError, OSError):
+            # utf-8-sig: SharpHound(C#) 이 붙이는 UTF-8 BOM 을 자동 제거
+            with open(fp, "r", encoding="utf-8-sig", errors="replace") as f:
+                text = f.read()
+            doc = json.loads(text.lstrip("﻿ \t\r\n"))
+        except (json.JSONDecodeError, OSError, ValueError):
+            parse_err += 1
             continue
+        if isinstance(doc, list):          # 혹시 최상위가 리스트인 변형
+            doc = {"data": doc, "meta": {}}
         if not isinstance(doc, dict) or "data" not in doc:
+            parse_err += 1
             continue
         meta = doc.get("meta", {}) if isinstance(doc.get("meta"), dict) else {}
         btype = _bh_type(doc, fp, meta)
         if btype not in nodes:
+            skipped_type += 1
             continue
         for obj in doc.get("data", []):
             if not isinstance(obj, dict):
@@ -614,8 +621,18 @@ def parse_bloodhound(json_path):
             nodes[btype].append(obj)
         loaded += 1
 
+    # .zip 이 그대로 있으면 안내
+    if os.path.isdir(json_path):
+        zip_seen = sum(1 for f in os.listdir(json_path) if f.lower().endswith(".zip"))
+
     if loaded == 0:
-        sys.exit("[!] --json-path 에서 유효한 BloodHound JSON 을 읽지 못했습니다.")
+        hint = f"(검사 {len(files)}개 · 파싱실패 {parse_err} · 타입미지원 {skipped_type})"
+        if not files and zip_seen:
+            hint += "\n    -> BloodHound 결과가 .zip 그대로입니다. 먼저 'unzip *.zip' 로 풀어 주세요."
+        elif parse_err:
+            hint += ("\n    -> JSON 파싱 실패. SharpHound 결과가 .zip 으로 묶여 있거나 손상됐을 수 있습니다. "
+                     "zip 이면 풀고, 개별 .json 인지 확인하세요.")
+        sys.exit(f"[!] --json-path 에서 유효한 BloodHound JSON 을 읽지 못했습니다. {hint}")
     return sid_map, nodes
 
 
