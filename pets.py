@@ -351,7 +351,7 @@ def scope_badge(scope):
     return f"{C.GREY}[로컬]{C.RESET}"
 
 
-def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
+def print_report(mapped, unmapped, os_hints, potato_tools, show_all, config_lpe=None):
     print(f"{C.CYAN}{C.BOLD}{BANNER}{C.RESET}")
 
     total = len(mapped) + len(unmapped)
@@ -422,6 +422,25 @@ def print_report(mapped, unmapped, os_hints, potato_tools, show_all):
     if hidden > 0:
         print(f"\n  {C.GREY}(탐지 OS 와 무관한 Potato 도구 {hidden}개는 숨김. "
               f"전체 목록은 exploit_db.json 참고){C.RESET}")
+
+    # 2.5) 설정 기반 LPE 체크리스트 (wes 로는 안 잡힘 - 항상 안내)
+    if config_lpe:
+        print(f"\n{C.YELLOW}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"{C.YELLOW}{C.BOLD} 설정 기반 LPE 체크리스트 (CVE 아님 - wes 미탐지, 반드시 수동 점검){C.RESET}")
+        print(f"{C.YELLOW}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"  {C.GREY}자동 일괄 점검: {C.RESET}{C.BOLD}winPEAS / PowerUp(Invoke-AllChecks) / Seatbelt{C.RESET}"
+              f"{C.GREY} 를 먼저 돌리세요{C.RESET}")
+        for c in config_lpe:
+            print(f"\n  {C.RED}●{C.RESET} {C.BOLD}{c['name']}{C.RESET}  {C.YELLOW}{c.get('ko','')}{C.RESET}")
+            for d in c.get("detect", []):
+                tag = "" if d.strip().startswith(("#", "(")) else "$ "
+                print(f"      {C.CYAN}{tag}{d}{C.RESET}")
+            for ex in c.get("exploit", []):
+                tag = "" if ex.strip().startswith(("#", "(")) else "$ "
+                col = C.GREY if ex.strip().startswith(("#", "(")) else C.GREEN
+                print(f"      {col}{tag}{ex}{C.RESET}")
+            for t in c.get("tools", []):
+                print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
     # 3) 미매핑 CVE
     print(f"\n{C.GREY}{C.BOLD}{'='*74}{C.RESET}")
@@ -1041,8 +1060,9 @@ def main():
     os_hints = detect_os(findings, full_text)
     mapped, unmapped = map_findings(findings, db)
     potato_tools = db.get("privilege_based_tools", [])
+    config_lpe = db.get("config_lpe", [])
 
-    print_report(mapped, unmapped, os_hints, potato_tools, args.show_all)
+    print_report(mapped, unmapped, os_hints, potato_tools, args.show_all, config_lpe)
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
