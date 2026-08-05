@@ -1,0 +1,84 @@
+Windows Exploit Suggester 1.03 ( https://github.com/bitsadmin/wesng/ )
+[+] Parsing systeminfo output
+[+] Operating System
+    - Name: Windows 10 Version 1809 for x64-based Systems
+    - Generation: 10
+    - Build: 17763
+    - Version: 1809
+    - Architecture: x64-based
+[+] Loading definitions
+    - Creation date of definitions: 20210610
+[+] Determining missing patches
+[!] Found vulnerabilities!
+
+Date: 20210608
+CVE: CVE-2021-31956
+KB: KB5003637
+Title: Windows NTFS Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+Date: 20210608
+CVE: CVE-2021-1732
+KB: KB5000822
+Title: Windows Win32k Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+Date: 20210608
+CVE: CVE-2021-36934
+KB: KB5004237
+Title: Windows Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+Date: 20200310
+CVE: CVE-2020-0796
+KB: KB4551762
+Title: Windows SMBv3 Client/Server Remote Code Execution Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Critical
+Impact: Remote Code Execution
+Exploit: https://github.com/danigargu/CVE-2020-0796
+
+Date: 20200211
+CVE: CVE-2020-0668
+KB: KB4537759
+Title: Windows Kernel Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+Date: 20180912
+CVE: CVE-2018-8410
+KB: KB4457131
+Title: Windows Registry Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+Date: 20190409
+CVE: CVE-2019-0841
+KB: KB4493509
+Title: Windows Elevation of Privilege Vulnerability
+Affected product: Windows 10 Version 1809 for x64-based Systems
+Affected component:
+Severity: Important
+Impact: Elevation of Privilege
+Exploit: n/a
+
+[+] Missing patches: 7

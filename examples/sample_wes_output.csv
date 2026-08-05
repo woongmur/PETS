@@ -1,0 +1,5 @@
+Date,CVE,KB,Title,Affected product,Affected component,Severity,Impact,Exploit
+20160308,CVE-2016-0099,KB3139914,Secondary Logon Elevation of Privilege Vulnerability,Windows 7 for x64-based Systems Service Pack 1,,Important,Elevation of Privilege,n/a
+20150512,CVE-2015-1701,KB3057191,Win32k Elevation of Privilege Vulnerability,Windows 7 for x64-based Systems Service Pack 1,,Important,Elevation of Privilege,n/a
+20141014,CVE-2014-4113,KB3000061,Win32k Elevation of Privilege Vulnerability,Windows 7 for x64-based Systems Service Pack 1,,Important,Elevation of Privilege,n/a
+20200211,CVE-2099-9999,KB9999999,Totally Unknown Vulnerability,Windows 7 for x64-based Systems Service Pack 1,,Important,Elevation of Privilege,https://example.com/poc
