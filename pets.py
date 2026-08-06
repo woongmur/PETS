@@ -760,6 +760,39 @@ def analyze_lateral(sid_map, nodes, belongs):
     return lateral
 
 
+# Azure AD Connect 동기화 계정 이름 접두사 (있으면 AD Connect 설치 추정)
+_SYNC_ACCT_PREFIX = ("MSOL_", "AAD_", "SYNC_", "AZUREADSSOACC")
+
+
+def analyze_group_hints(sid_map, nodes, belongs, ad_db):
+    """이름 있는 특권 그룹 멤버십 -> 알려진 기법 매핑. ACL 엣지로는 안 잡히는 부분.
+    반환: [ {key, group, owned, info} ] (owned=소유 계정이 속한 그룹이면 True)."""
+    gp = ad_db.get("group_privesc", {})
+    if not gp:
+        return []
+    hints, seen = [], set()
+    for g in nodes["groups"]:
+        up = (g.get("_name", "") or "").upper()
+        gsid = g.get("_sid", "")
+        for key, info in gp.items():
+            if key.startswith("_"):
+                continue
+            if key in up and (key, gsid) not in seen:
+                seen.add((key, gsid))
+                hints.append({"key": key, "group": g.get("_name", ""),
+                              "owned": gsid in belongs, "info": info})
+    # MSOL_/AAD_ 동기화 계정 존재 -> Azure AD Connect 설치 추정(그룹명 없어도 표면화)
+    msol = [u.get("_name", "") for u in nodes["users"]
+            if (u.get("_name", "") or "").upper().startswith(_SYNC_ACCT_PREFIX)]
+    if msol and "AZURE ADMINS" in gp and not any(h["key"] == "AZURE ADMINS" for h in hints):
+        hints.append({"key": "AZURE ADMINS",
+                      "group": f"(동기화 계정 {msol[0]} 탐지 → Azure AD Connect 설치 추정)",
+                      "owned": True, "info": gp["AZURE ADMINS"]})
+    hints.sort(key=lambda h: (not h["owned"],
+                              {"high": 0, "med": 1, "low": 2}.get(h["info"].get("priority", "med"), 1)))
+    return hints
+
+
 # 대상을 "장악"하게 해 주는 권한(=경로 확장 가능). WriteSPN 은 크랙 전제라 제외.
 TAKEOVER_RIGHTS = {
     "GenericAll", "GenericWrite", "WriteDacl", "WriteOwner", "Owns",
@@ -1106,6 +1139,27 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
         for t in info.get("tools", []):
             print(f"        {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
+    # 2.6) 역할/특권 그룹 기반 권한상승 (ACL 엣지가 아닌 이름있는 그룹 멤버십)
+    ghints = ctx.get("group_hints", [])
+    if ghints:
+        print(f"\n{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
+        gt = " 역할/특권 그룹 기반 권한상승 (엣지 아님 — 그룹 멤버십 기반 기법)"
+        if owned_names:
+            gt += "   ★ = 소유 계정 소속"
+        print(f"{C.MAGENTA}{C.BOLD}{gt}{C.RESET}")
+        print(f"{C.MAGENTA}{C.BOLD}{'='*74}{C.RESET}")
+        for h in ghints:
+            info = h["info"]
+            star = f" {C.GREEN}{C.BOLD}[★ 소유 계정 소속]{C.RESET}" if h["owned"] else ""
+            print(f"\n{C.BOLD}● {C.RED}{h['group']}{C.RESET}  {C.YELLOW}{info.get('ko','')}{C.RESET}{star}")
+            if info.get("summary"):
+                print(f"    {C.DIM}{info['summary']}{C.RESET}")
+            _print_cmds(info.get("cmd", []), subs, indent="      ")
+            for t in info.get("tools", []):
+                print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
+            for r in info.get("refs", []):
+                print(f"      {C.GREY}ref: {r}{C.RESET}")
+
     # 2.7) 측면이동 (로컬관리자/RDP/WinRM/DCOM)
     lateral = ctx.get("lateral", {})
     ldb = ad_db.get("lateral", {})
@@ -1198,6 +1252,12 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
         actions.append((tier, _edge_priority(ad_db, k),
                         f"{k}: {tgt}" + (f" 외 {len(props[k])-1}" if len(props[k]) > 1 else ""),
                         cmds, mk, C.GREEN))
+    for h in ctx.get("group_hints", []):     # 소유 계정이 속한 특권 그룹 기법
+        if not h["owned"]:
+            continue
+        pri = {"high": 0, "med": 1, "low": 2}.get(h["info"].get("priority", "med"), 1)
+        actions.append((0, pri, f"그룹[{h['key']}]: {h['info'].get('ko','')}",
+                        h["info"].get("cmd", []), "★GROUP", C.GREEN))
 
     if actions:
         actions.sort(key=lambda a: (a[0], a[1]))
@@ -1274,6 +1334,12 @@ def build_ad_json(edges, props, ctx=None):
             [{"from": h["frm"], "edge": h["label"], "to": h["to"], "to_type": h["to_type"]}
              for h in hops]
             for hops in ctx["paths"]
+        ]
+    if ctx and ctx.get("group_hints"):
+        out["group_privesc"] = [
+            {"group": h["group"], "key": h["key"], "owned": h["owned"],
+             "technique": h["info"].get("ko", "")}
+            for h in ctx["group_hints"]
         ]
     return out
 
@@ -1367,9 +1433,11 @@ def _run_ad(args):
     subs = build_subs(owned_args, args.domain, args.dc, nodes, sid_map)
     lateral = analyze_lateral(sid_map, nodes, belongs)
     paths = find_attack_paths(edges, sid_map, nodes, owned_sids)
+    group_hints = analyze_group_hints(sid_map, nodes, belongs, ad_db)
     ctx = {"owned_names": owned_names, "owned_sids": owned_sids,
            "belongs": belongs, "not_found": not_found, "subs": subs,
-           "show_privileged": args.show_privileged, "lateral": lateral, "paths": paths}
+           "show_privileged": args.show_privileged, "lateral": lateral,
+           "paths": paths, "group_hints": group_hints}
 
     print_ad_report(edges, props, ad_db, sid_map, nodes, ctx)
     if args.json:

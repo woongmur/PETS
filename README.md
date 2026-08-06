@@ -126,6 +126,12 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 - **속성 기반** — Kerberoastable(SPN) · AS-REP Roastable · 제약/무제약 위임 · PasswordNotReqd · SIDHistory
 - **측면이동** — 컴퓨터 로컬그룹 기반 `LocalAdmin` · `RDP` · `WinRM` · `DCOM` 접근 (owned 계정 우선 강조)
 - **AD CS (ESC1~13)** — bloodhound-python 이 수집 못 하므로 Certipy 점검 명령 + 각 ESC 악용법을 상시 안내
+- **역할/특권 그룹 기반 권한상승** — ACL 엣지가 아닌 **이름 있는 그룹 멤버십**에서 오는 기법을 매핑한다.
+  `Azure Admins`(Azure AD Connect 자격증명 추출, HTB *Monteverde* 정공법) · `DnsAdmins`(DLL→SYSTEM) ·
+  `Backup Operators`(SeBackup→NTDS 덤프) · `Server Operators`(서비스→SYSTEM) · `Print Operators`
+  (SeLoadDriver) · `Group Policy Creator Owners` · `Account Operators` 등. 소유 계정이 속한 그룹이면
+  `[★ 소유 계정 소속]` 으로 강조하고 즉시-실행 목록에도 올린다. `MSOL_`/`AAD_` 동기화 계정이 보이면
+  Azure AD Connect 설치로 추정해 함께 표면화한다.
 - **저권한 주체 강조** — `Domain Users`/`Authenticated Users`/`Everyone` 등이 가진 엣지를
   `[저권한 주체 포함!]` 로 최상위 강조 (누구나 악용 가능 = 최우선 확인 대상)
 - **노이즈 제거(특권 주체 필터)** — `Domain Admins`/`Enterprise Admins`/`Administrators` 처럼
