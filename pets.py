@@ -658,15 +658,24 @@ def parse_bloodhound(json_path):
             continue
         if isinstance(doc, list):          # 최상위가 리스트인 변형
             doc = {"data": doc, "meta": {}}
-        if not isinstance(doc, dict) or "data" not in doc:
-            reasons.append(f"{name}: 최상위에 'data' 키 없음")
+        if not isinstance(doc, dict):
+            reasons.append(f"{name}: JSON 최상위가 객체/배열이 아님")
             continue
         meta = doc.get("meta", {}) if isinstance(doc.get("meta"), dict) else {}
-        btype = _bh_type(name, meta)
+        # 데이터 배열 위치: 신형 {"data":[...]} 또는 구형 {"computers":[...]}(타입명 키)
+        if isinstance(doc.get("data"), list):
+            data = doc["data"]
+            btype = _bh_type(name, meta)
+        else:
+            btype = next((k for k in nodes if isinstance(doc.get(k), list)), None)
+            data = doc.get(btype) if btype else None
+        if data is None:
+            reasons.append(f"{name}: 데이터 배열('data' 또는 타입명 키) 없음")
+            continue
         if btype not in nodes:
             skipped_type += 1
             continue
-        for obj in doc.get("data", []):
+        for obj in data:
             if not isinstance(obj, dict):
                 continue
             props = obj.get("Properties", {}) or {}
@@ -687,11 +696,38 @@ def parse_bloodhound(json_path):
     return sid_map, nodes
 
 
+# 잘 알려진 BUILTIN SID (노드로 수집 안 됐을 때 이름 해석 -> Tier-0/힌트 매칭)
+_WELLKNOWN_SID = {
+    "S-1-1-0": "EVERYONE", "S-1-5-11": "AUTHENTICATED USERS", "S-1-5-9": "ENTERPRISE DOMAIN CONTROLLERS",
+    "S-1-5-32-544": "ADMINISTRATORS", "S-1-5-32-545": "USERS", "S-1-5-32-546": "GUESTS",
+    "S-1-5-32-548": "ACCOUNT OPERATORS", "S-1-5-32-549": "SERVER OPERATORS",
+    "S-1-5-32-550": "PRINT OPERATORS", "S-1-5-32-551": "BACKUP OPERATORS",
+    "S-1-5-32-555": "REMOTE DESKTOP USERS", "S-1-5-32-562": "DISTRIBUTED COM USERS",
+    "S-1-5-32-578": "HYPER-V ADMINISTRATORS", "S-1-5-32-580": "REMOTE MANAGEMENT USERS",
+}
+# 도메인 상대 RID (도메인 SID 접미사로 매칭)
+_WELLKNOWN_RID = {
+    "500": "ADMINISTRATOR", "502": "KRBTGT", "512": "DOMAIN ADMINS", "513": "DOMAIN USERS",
+    "515": "DOMAIN COMPUTERS", "516": "DOMAIN CONTROLLERS", "518": "SCHEMA ADMINS",
+    "519": "ENTERPRISE ADMINS", "520": "GROUP POLICY CREATOR OWNERS", "517": "CERT PUBLISHERS",
+}
+
+
+def _wellknown_sid_name(sid):
+    if sid in _WELLKNOWN_SID:
+        return _WELLKNOWN_SID[sid]
+    if sid.startswith("S-1-5-21-"):
+        rid = sid.rsplit("-", 1)[-1]
+        if rid in _WELLKNOWN_RID:
+            return _WELLKNOWN_RID[rid]
+    return None
+
+
 def _resolve(sid, sid_map):
     info = sid_map.get(sid)
     if info:
         return info["name"]
-    return sid or "(unknown)"
+    return _wellknown_sid_name(sid) or sid or "(unknown)"
 
 
 def analyze_ad(sid_map, nodes):
