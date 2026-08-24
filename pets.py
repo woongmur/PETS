@@ -566,47 +566,103 @@ def load_ad_db(path=None):
         return json.load(f)
 
 
-def _bh_type(obj, fname, meta):
+def _bh_type(name, meta):
     t = (meta.get("type") or "").lower()
     if t:
         return t
+    low = name.lower()
     for key in ("users", "groups", "computers", "domains", "gpos", "ous", "containers"):
-        if key in os.path.basename(fname).lower():
+        if key in low:
             return key
     return "unknown"
 
 
-def parse_bloodhound(json_path):
-    """디렉터리(또는 단일 파일)에서 bloodhound-python JSON 을 읽어
-    (sid_map, nodes) 반환. nodes 는 타입별 객체 리스트."""
+def _decode_bh(raw):
+    """BloodHound JSON 바이트를 인코딩 자동감지로 디코드+파싱. (doc, reason) 반환."""
+    if raw[:4] == b"PK\x03\x04":
+        return None, "실제로는 .zip 파일 (--json-path 에 .zip 경로를 직접 주거나 풀어서 사용)"
+    last = "디코딩 실패"
+    # SharpHound.ps1/Out-File 은 UTF-16, SharpHound.exe 는 UTF-8(BOM) -> 순서대로 시도
+    for enc in ("utf-8-sig", "utf-16", "utf-8", "latin-1"):
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        text = text.lstrip("﻿ \t\r\n\x00")
+        if not text:
+            return None, "빈 파일"
+        if text[0] not in "{[":
+            last = f"JSON 이 아님(시작 문자 '{text[:1]}')"
+            continue
+        try:
+            return json.loads(text), None
+        except json.JSONDecodeError as e:
+            last = f"JSON 오류({enc}): {e.msg} @{e.lineno}:{e.colno}"
+    return None, last
+
+
+def _collect_bh_sources(json_path):
+    """--json-path(디렉터리/파일/zip)에서 (표시이름, bytes) 소스 목록 수집."""
+    import zipfile
+    sources = []
+
+    def add_zip(zp):
+        try:
+            with zipfile.ZipFile(zp) as z:
+                for n in z.namelist():
+                    if n.lower().endswith(".json"):
+                        sources.append((f"{os.path.basename(zp)}!{os.path.basename(n)}", z.read(n)))
+        except (zipfile.BadZipFile, OSError):
+            pass
+
+    def add_file(fp):
+        try:
+            with open(fp, "rb") as f:
+                sources.append((os.path.basename(fp), f.read()))
+        except OSError:
+            pass
+
     if os.path.isdir(json_path):
-        files = [os.path.join(json_path, f) for f in os.listdir(json_path)
-                 if f.lower().endswith(".json")]
+        for f in sorted(os.listdir(json_path)):
+            fp = os.path.join(json_path, f)
+            if f.lower().endswith(".json"):
+                add_file(fp)
+            elif f.lower().endswith(".zip"):
+                add_zip(fp)
     elif os.path.isfile(json_path):
-        files = [json_path]
+        if json_path.lower().endswith(".zip"):
+            add_zip(json_path)
+        else:
+            add_file(json_path)
     else:
         sys.exit(f"[!] --json-path 경로를 찾을 수 없습니다: {json_path}")
+    return sources
+
+
+def parse_bloodhound(json_path):
+    """디렉터리/파일/zip 에서 BloodHound JSON(bloodhound-python·SharpHound·SharpHound.ps1)을
+    읽어 (sid_map, nodes) 반환. 인코딩(UTF-8 BOM/UTF-16)·zip 을 자동 처리."""
+    sources = _collect_bh_sources(json_path)
+    if not sources:
+        sys.exit(f"[!] --json-path 에서 .json/.zip 을 찾지 못했습니다: {json_path}")
 
     sid_map = {}
     nodes = {"users": [], "groups": [], "computers": [], "domains": [],
              "gpos": [], "ous": [], "containers": []}
-    loaded = parse_err = skipped_type = zip_seen = 0
-    for fp in files:
-        try:
-            # utf-8-sig: SharpHound(C#) 이 붙이는 UTF-8 BOM 을 자동 제거
-            with open(fp, "r", encoding="utf-8-sig", errors="replace") as f:
-                text = f.read()
-            doc = json.loads(text.lstrip("﻿ \t\r\n"))
-        except (json.JSONDecodeError, OSError, ValueError):
-            parse_err += 1
+    loaded = skipped_type = 0
+    reasons = []
+    for name, raw in sources:
+        doc, why = _decode_bh(raw)
+        if doc is None:
+            reasons.append(f"{name}: {why}")
             continue
-        if isinstance(doc, list):          # 혹시 최상위가 리스트인 변형
+        if isinstance(doc, list):          # 최상위가 리스트인 변형
             doc = {"data": doc, "meta": {}}
         if not isinstance(doc, dict) or "data" not in doc:
-            parse_err += 1
+            reasons.append(f"{name}: 최상위에 'data' 키 없음")
             continue
         meta = doc.get("meta", {}) if isinstance(doc.get("meta"), dict) else {}
-        btype = _bh_type(doc, fp, meta)
+        btype = _bh_type(name, meta)
         if btype not in nodes:
             skipped_type += 1
             continue
@@ -615,27 +671,19 @@ def parse_bloodhound(json_path):
                 continue
             props = obj.get("Properties", {}) or {}
             sid = obj.get("ObjectIdentifier") or props.get("objectid") or ""
-            name = props.get("name") or props.get("distinguishedname") or sid
+            oname = props.get("name") or props.get("distinguishedname") or sid
             if sid:
-                sid_map[sid] = {"name": name, "type": btype[:-1] if btype.endswith("s") else btype}
+                sid_map[sid] = {"name": oname, "type": btype[:-1] if btype.endswith("s") else btype}
             obj["_type"] = btype
             obj["_sid"] = sid
-            obj["_name"] = name
+            obj["_name"] = oname
             nodes[btype].append(obj)
         loaded += 1
 
-    # .zip 이 그대로 있으면 안내
-    if os.path.isdir(json_path):
-        zip_seen = sum(1 for f in os.listdir(json_path) if f.lower().endswith(".zip"))
-
     if loaded == 0:
-        hint = f"(검사 {len(files)}개 · 파싱실패 {parse_err} · 타입미지원 {skipped_type})"
-        if not files and zip_seen:
-            hint += "\n    -> BloodHound 결과가 .zip 그대로입니다. 먼저 'unzip *.zip' 로 풀어 주세요."
-        elif parse_err:
-            hint += ("\n    -> JSON 파싱 실패. SharpHound 결과가 .zip 으로 묶여 있거나 손상됐을 수 있습니다. "
-                     "zip 이면 풀고, 개별 .json 인지 확인하세요.")
-        sys.exit(f"[!] --json-path 에서 유효한 BloodHound JSON 을 읽지 못했습니다. {hint}")
+        lines = "\n    ".join(reasons[:8]) if reasons else "읽을 파일 없음"
+        sys.exit(f"[!] --json-path 에서 유효한 BloodHound JSON 을 읽지 못했습니다.\n"
+                 f"    (소스 {len(sources)}개 · 성공 0 · 타입미지원 {skipped_type})\n    {lines}")
     return sid_map, nodes
 
 
