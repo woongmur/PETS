@@ -126,6 +126,9 @@ python3 pets.py --ad --json-path ./ --owned 'jdoe,svc_sql'
 - **속성 기반** — Kerberoastable(SPN) · AS-REP Roastable · 제약/무제약 위임 · PasswordNotReqd · SIDHistory
 - **측면이동** — 컴퓨터 로컬그룹 기반 `LocalAdmin` · `RDP` · `WinRM` · `DCOM` 접근 (owned 계정 우선 강조)
 - **AD CS (ESC1~13)** — bloodhound-python 이 수집 못 하므로 Certipy 점검 명령 + 각 ESC 악용법을 상시 안내
+- **Domain User 기본 공격 플레이북** — 소유 계정에 직접 악용 엣지가 없어도(“0종 0건”) 도메인 사용자는
+  막다른 길이 아니다. 유효 크레덴셜만으로 되는 표준 공격(Kerberoast · AS-REP · 패스워드 스프레이 ·
+  AD CS 점검 · noPac · GPP/설명필드/공유 자격증명 사냥 · LDAP 수확 · BloodHound 경로 재검토)을 항상 함께 출력한다.
 - **역할/특권 그룹 기반 권한상승** — ACL 엣지가 아닌 **이름 있는 그룹 멤버십**에서 오는 기법을 매핑한다.
   `Azure Admins`(Azure AD Connect 자격증명 추출, HTB *Monteverde* 정공법) · `DnsAdmins`(DLL→SYSTEM) ·
   `Backup Operators`(SeBackup→NTDS 덤프) · `Server Operators`(서비스→SYSTEM) · `Print Operators`

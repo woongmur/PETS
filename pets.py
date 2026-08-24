@@ -1125,8 +1125,9 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
                   f"{C.GREEN}{', '.join(prop_actionable)}{C.RESET}{C.GREY} 즉시 수행 가능 "
                   f"(아래 '속성 기반' 참고){C.RESET}")
         if not owned_hits and not prop_actionable:
-            print(f"{C.YELLOW}       ! {C.RESET}{C.GREY}소유 계정이 직접 가진 엣지가 없습니다. "
-                  f"아래 속성 기반(Kerberoast 등)·저권한 엣지를 확인하세요.{C.RESET}")
+            print(f"{C.YELLOW}       ! {C.RESET}{C.GREY}직접 연결된 악용 엣지는 없습니다(막다른 길 아님). "
+                  f"아래 {C.RESET}{C.CYAN}'Domain User 기본 공격'{C.GREY} 섹션을 그대로 시도하세요 "
+                  f"(Kerberoast·AS-REP·AD CS·noPac·크레덴셜 사냥 등, 엣지 불필요).{C.RESET}")
         if not_found:
             print(f"{C.YELLOW}[경고]{C.RESET} BloodHound 데이터에서 못 찾은 소유 계정: "
                   f"{C.YELLOW}{', '.join(not_found)}{C.RESET}{C.GREY} (이름 철자/도메인 확인){C.RESET}")
@@ -1243,6 +1244,19 @@ def print_ad_report(edges, props, ad_db, sid_map, nodes, ctx=None):
                 print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
             for r in info.get("refs", []):
                 print(f"      {C.GREY}ref: {r}{C.RESET}")
+
+    # 2.65) Domain User 기본 공격 플레이북 (엣지 없어도 유효 크레덴셜만으로 가능 — 항상 표시)
+    baseline = ad_db.get("baseline", [])
+    if baseline:
+        print(f"\n{C.CYAN}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"{C.CYAN}{C.BOLD} Domain User 기본 공격 (엣지 없어도 유효 크레덴셜만으로 시도){C.RESET}")
+        print(f"{C.CYAN}{C.BOLD}{'='*74}{C.RESET}")
+        print(f"  {C.GREY}‘0종 0건’이어도 도메인 사용자는 막다른 길이 아니다 — 아래는 항상 시도할 표준 공격.{C.RESET}")
+        for b in baseline:
+            print(f"\n  {C.RED}●{C.RESET} {C.BOLD}{b['name']}{C.RESET}  {C.YELLOW}{b.get('ko','')}{C.RESET}")
+            _print_cmds(b.get("cmd", []), subs, indent="      ")
+            for t in b.get("tools", []):
+                print(f"      {_tlabel(t.get('type',''))} {t['name']}  {C.BLUE}{t.get('url','')}{C.RESET}")
 
     # 2.7) 측면이동 (로컬관리자/RDP/WinRM/DCOM)
     lateral = ctx.get("lateral", {})
