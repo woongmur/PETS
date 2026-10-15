@@ -539,9 +539,9 @@ LATERAL_FIELDS = {
 GPO_WRITE_RIGHTS = {"GenericWrite", "GenericAll", "WriteDacl", "WriteOwner"}
 # DCSync 판정용
 DCSYNC_RIGHTS = {"getchanges", "getchangesall", "getchangesinfilteredset"}
-# "누구나" 악용 가능한 저권한 주체 (우선순위 상향)
-LOWPRIV_PRINCIPALS = ("DOMAIN USERS", "AUTHENTICATED USERS", "EVERYONE",
-                      "DOMAIN COMPUTERS", "ANONYMOUS", "GUESTS", "USERS")
+# "누구나(모든 인증 유저)" 가 실제로 속한 주체만. Domain Computers 는 컴퓨터계정만
+# 멤버라 유저가 소유한 게 아니므로 제외(오탐 방지). 광범위 매칭되는 'USERS' 도 제외.
+LOWPRIV_PRINCIPALS = ("DOMAIN USERS", "AUTHENTICATED USERS", "EVERYONE")
 # 이미 최고 권한인 주체(Tier-0). 이들이 principal 인 엣지는 권한상승과 무관 -> 기본 숨김.
 # (Account/Backup/Server Operators, DNSAdmins 등 '상승 발판'이 되는 그룹은 제외)
 TIER0_GROUP_TOKENS = ("DOMAIN ADMINS", "ENTERPRISE ADMINS", "SCHEMA ADMINS",
